@@ -233,10 +233,15 @@ def run_pipeline(
         ]
     logger.info("Daily quotes for universe: %d rows", len(prices))
 
+    # Fetch TOPIX index for the same window (needed for price_6mo_vs_tpx).
+    logger.info("Fetching TOPIX index (%s to %s)...", six_months_ago, today)
+    topix = client.get_topix_index(date_from=six_months_ago, date_to=today)
+    logger.info("TOPIX index: %d rows", len(topix))
+
     # ── 4. Compute metrics ────────────────────────────────────────────
     logger.info("Computing category metrics...")
     fundamentals_df = compute_fundamentals_metrics(financials, prices)
-    valuation_df = compute_valuation_metrics(financials, prices)
+    valuation_df = compute_valuation_metrics(financials, prices, topix=topix)
     sector_df = compute_sector_metrics(financials)
     factors_df = compute_factor_metrics(financials)
     kozo_df = compute_kozo_metrics(fundamentals_df)
