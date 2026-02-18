@@ -9,8 +9,6 @@ This is **Paradaim Capital's** proprietary stock scoring system for Japanese equ
 
 The system is built on the **PARA Cycle** framework (Partner → Architect → Reform → Amplify) that underpins Paradaim's alliance investing methodology in Japan.
 
-> **Note:** The firm name is "Paradaim Capital" — NOT "Paradigm". The spelling is intentional.
-
 ---
 
 ## Scoring Architecture
