@@ -1,1 +1,1 @@
-"""Data ingestion adapters for J-Quants, Bloomberg, and FactSet."""
+"""Data ingestion adapters for J-Quants, Bloomberg, FactSet, and Google Sheets."""
