@@ -3,6 +3,18 @@
 # ⚠️ Verify category_weights values before production use.
 
 # ──────────────────────────────────────────────────────────────────────
+# Universe filtering
+# ──────────────────────────────────────────────────────────────────────
+# J-Quants MarketCode values (post-April 2022 TSE restructuring):
+#   "0111" = Prime Market   (successor to 1st Section, ~1,600-1,800 stocks)
+#   "0112" = Standard Market (successor to 2nd Section)
+#   "0113" = Growth Market   (successor to MOTHERS / JASDAQ Growth)
+#   "0109" = Others          (PRO Market, etc.)
+# Set to empty list [] to include all listed companies.
+universe:
+  market_codes: ["0111"]   # Prime Market only (≈ TOPIX 1st Section)
+
+# ──────────────────────────────────────────────────────────────────────
 # Category-level weights for composite scores
 # ──────────────────────────────────────────────────────────────────────
 category_weights:
