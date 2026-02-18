@@ -1,0 +1,76 @@
+# Paradaim Capital — PARA Score Weights Configuration
+# This file is the single source of truth for all scoring weights.
+# ⚠️ Verify category_weights values before production use.
+
+# ──────────────────────────────────────────────────────────────────────
+# Category-level weights for composite scores
+# ──────────────────────────────────────────────────────────────────────
+category_weights:
+  VI:
+    fundamentals: 0.25
+    valuation: 0.25
+    sector: 0.00        # Sector irrelevant for value creation potential
+    factors: 0.20
+    kozo: 0.30           # Structural improvement = core of alliance investing
+  SP:
+    fundamentals: 0.25
+    valuation: 0.25
+    sector: 0.15
+    factors: 0.20
+    kozo: 0.15
+
+# ──────────────────────────────────────────────────────────────────────
+# Metric-level weights within each category
+# Format: metric_name: [weight, higher_is_better]
+# ──────────────────────────────────────────────────────────────────────
+
+fundamentals:
+  f2_f0_sales_growth:    [0.05, true]
+  f2_f0_ebit_growth:     [0.10, true]
+  f1_f0_op_growth:       [0.10, true]
+  f2_f1_op_growth:       [0.15, true]
+  opm:                   [0.15, true]
+  roe:                   [0.20, true]
+  equity_ratio:          [0.05, true]
+  net_cash_mktcap:       [0.10, true]
+  altman_z:              [0.10, true]
+
+valuation:
+  pbr_vs_10yr:           [0.10, false]   # Lower PBR relative to history = cheaper
+  pen_vs_10yr:           [0.10, false]   # Lower normalized PE relative to history = cheaper
+  pegn:                  [0.10, false]   # Lower PEG = better value for growth
+  adv_liquidity:         [0.15, true]
+  broker_target_upside:  [0.05, true]
+  peer_target_upside:    [0.05, true]
+  price_6mo_vs_tpx:      [0.05, true]
+  para_target_upside:    [0.40, true]
+
+sector:
+  cyclical_momentum:     [0.20, true]
+  sector_trend_fund:     [0.30, true]
+  sector_trend_val:      [0.20, true]
+  competitive_strength:  [0.30, true]
+
+factors:
+  factor_fit:            [0.50, true]
+  theme_fit:             [0.50, true]
+
+kozo:
+  underperf_segments:    [0.20, true]    # More underperforming segments = more opportunity
+  sga_vs_peer:           [0.15, false]   # Higher SGA vs peers = more room to cut
+  roe_vs_peer:           [0.10, true]    # Higher ROE vs peers (or lower = more room?)
+  excess_cash_mktcap:    [0.10, true]
+  lti_mktcap:            [0.05, true]
+  land_mktcap:           [0.10, true]
+  payout_ratio:          [0.10, true]
+  analyst_coverage:      [0.10, false]   # Low coverage = more opportunity for engagement
+  ke_vs_peer:            [0.05, false]   # Lower cost of equity = better
+  board_size:            [0.05, false]   # Smaller board = better governance signal
+
+# ──────────────────────────────────────────────────────────────────────
+# Scoring parameters
+# ──────────────────────────────────────────────────────────────────────
+scoring:
+  winsorize_lower: 0.01    # 1st percentile
+  winsorize_upper: 0.99    # 99th percentile
+  min_coverage: 0.05       # Skip metric if <5% of universe has data
