@@ -23,6 +23,49 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+def _filter_universe(
+    universe: pd.DataFrame, config_path: str
+) -> pd.DataFrame:
+    """Filter the universe based on market codes in the config.
+
+    Parameters
+    ----------
+    universe : pd.DataFrame
+        Full listed-company DataFrame from J-Quants (must contain
+        ``MarketCode`` column).
+    config_path : str
+        Path to scoring weights YAML.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered subset.  Returns ``universe`` unchanged when no
+        ``market_codes`` are configured (or the list is empty).
+    """
+    with open(config_path, "r") as f:
+        cfg = yaml.safe_load(f)
+
+    market_codes: list[str] = (
+        cfg.get("universe", {}).get("market_codes") or []
+    )
+    if not market_codes:
+        return universe
+
+    if "MarketCode" not in universe.columns:
+        logger.warning(
+            "MarketCode column not found in listed-company data; "
+            "skipping universe filter."
+        )
+        return universe
+
+    filtered = universe[universe["MarketCode"].isin(market_codes)].copy()
+    logger.info(
+        "Universe filtered by MarketCode %s: %d -> %d companies",
+        market_codes, len(universe), len(filtered),
+    )
+    return filtered
+
+
 def run_pipeline(
     config_path: str = "config/scoring_weights.yaml",
     output_dir: str = "",
@@ -42,7 +85,10 @@ def run_pipeline(
     logger.info("Loading data from J-Quants...")
     client = JQuantsClient()
     universe = client.get_listed_companies()
-    logger.info("Universe: %d companies", len(universe))
+    logger.info("Full universe: %d companies", len(universe))
+
+    universe = _filter_universe(universe, config_path)
+    logger.info("Scoring universe: %d companies", len(universe))
 
     # --- Metric Computation ---
     logger.info("Computing metrics...")
