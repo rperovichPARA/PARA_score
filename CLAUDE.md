@@ -179,6 +179,85 @@ The scoring output should eventually be accessible as:
 
 ---
 
+## Deployment & Integration
+
+### Architecture
+
+The scoring pipeline and serving layer are decoupled:
+
+- **Scoring pipeline** — Runs externally via **GitHub Actions** on a weekly cron (Saturday 01:00 UTC). The full TOPIX universe (~3,700+ stocks) takes ~30 minutes, which would timeout on Render.
+- **Serving layer** — A Flask blueprint (`para_score_blueprint.py`) on the existing **portfoliotools** Render app (`portfolio-optimizer-nnt7.onrender.com`). It is a pure read layer that serves pre-computed scores from a JSON cache.
+
+### Data Flow
+
+```
+GitHub Actions (weekly cron)
+  → runs scoring pipeline (src/pipeline.py)
+  → formats output as JSON
+  → POSTs to /para-score/upload on Render (bearer token auth)
+  → blueprint caches scores in memory
+  → n8n AI agents query /para-score endpoints via HTTP Request tools
+```
+
+### Upload Endpoint
+
+`POST /para-score/upload` is authenticated with a bearer token (`PARA_SCORE_UPLOAD_KEY` env var on Render).
+
+#### JSON Payload Schema
+
+```json
+{
+  "scores": [
+    {
+      "code": "7203",
+      "name": "Toyota Motor Corp",
+      "sector": "Transportation Equipment",
+      "VI_score": 1.42,
+      "SP_score": 0.87,
+      "VI_rank": 12,
+      "SP_rank": 45,
+      "fundamentals_score": 0.9,
+      "valuation_score": 1.1,
+      "sector_score": 0.3,
+      "factors_score": 0.0,
+      "kozo_score": 1.8
+    }
+  ],
+  "metadata": {
+    "run_timestamp": "2026-02-14T01:00:00Z",
+    "universe_size": 3742,
+    "pipeline_version": "0.1.0",
+    "data_sources": ["jquants", "google_sheets"]
+  },
+  "coverage": {
+    "roe": {"count": 3650, "pct": 0.975},
+    "opm": {"count": 3620, "pct": 0.967}
+  }
+}
+```
+
+### portfoliotools Integration
+
+The portfoliotools repo is at `github.com/rperovichPARA/portfoliotools`. It is a Flask app with blueprints, served by gunicorn on port 10000, deployed on a Render Starter plan.
+
+- **Pattern to follow**: `sector_signals_blueprint.py` — register the new blueprint the same way.
+- **New blueprint**: `para_score_blueprint.py`
+
+### GitHub Actions Secrets
+
+| Secret                      | Purpose                                      |
+|-----------------------------|----------------------------------------------|
+| `JQUANTS_API_KEY`           | J-Quants API authentication                  |
+| `GOOGLE_SHEETS_CREDENTIALS` | Access to holdings and candidates sheets      |
+| `PARA_SCORE_UPLOAD_KEY`     | Bearer token for the Render upload endpoint   |
+| `RENDER_API_URL`            | Base URL of the portfoliotools Render service |
+
+### n8n AI Agent Consumers
+
+The **Portfolio Director** and **Candidate Finder** n8n workflows query the `/para-score` endpoints via HTTP Request tools to retrieve scores, rankings, and coverage data for RAG-powered analysis.
+
+---
+
 ## Code Conventions
 
 - **Python 3.10+**
