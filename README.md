@@ -1,6 +1,6 @@
 # PARA Score
 
-Paradaim Capital's proprietary stock scoring system for Japanese equities. Produces **VI (Value Impact)** and **SP (Stock Pick)** composite scores for the TOPIX universe (~3,700+ stocks).
+Paradaim Capital's proprietary stock scoring system for Japanese equities. Produces **VI (Value Impact)** and **SP (Stock Pick)** composite scores for the TOPIX universe (~1,700+ stocks).
 
 ## Scores
 
