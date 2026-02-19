@@ -4,12 +4,12 @@ Covers relative valuation vs history, liquidity, price momentum,
 and target price upside metrics.
 
 Combines J-Quants financial statements and daily bars with supplementary
-data from the PARA.FS.data Google Sheet for metrics not available via
-J-Quants alone (broker target upside, PARA target upside, historical
-PBR/PE averages).
+data from the PARA.FS.data Google Sheet (via :class:`~src.data.gsheets.GoogleSheetsClient`)
+for metrics not available via J-Quants alone (broker target upside,
+PARA target upside, historical PBR/PE averages).
 
 Google Sheet reference (PARA.FS.data):
-    https://docs.google.com/spreadsheets/d/10mjEbmtJC6y5tCqnQ_SrUQAfheDhafAtpX0DjJJO5fk/edit?gid=0#gid=0
+    https://docs.google.com/spreadsheets/d/10mjEbmtJC6y5tCqnQ_SrUQAfheDhafAtpX0DjJJO5fk
 """
 
 from __future__ import annotations
@@ -21,22 +21,37 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from src.data.gsheets import GoogleSheetsClient
 from src.scoring.utils import load_metric_defs, load_scoring_params, score_category
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# PARA.FS.data Google Sheet — supplementary data source
+# Google Sheets configuration
 # ---------------------------------------------------------------------------
-# Same sheet used by fundamentals.py.  Valuation-specific columns include
-# broker/PARA target upside, PBR/PE vs 10yr averages, and PEGn overrides.
-# The sheet is populated by separate pipeline steps and may be empty.
+# GID for the valuation supplement tab in the PARA.FS.data spreadsheet.
+_VALUATION_SHEET_GID: int = 0
 
-GSHEET_ID = "10mjEbmtJC6y5tCqnQ_SrUQAfheDhafAtpX0DjJJO5fk"
-GSHEET_CSV_URL = (
-    f"https://docs.google.com/spreadsheets/d/{GSHEET_ID}"
-    "/export?format=csv&gid=0"
-)
+# Column map: sheet column names -> internal metric names.
+_COLUMN_MAP: dict[str, str] = {
+    "PBR vs 10yr": "pbr_vs_10yr",
+    "PBR_vs_10yr": "pbr_vs_10yr",
+    "PEn vs 10yr": "pen_vs_10yr",
+    "PEn_vs_10yr": "pen_vs_10yr",
+    "PEGn": "pegn",
+    "ADV Liquidity": "adv_liquidity",
+    "ADV_Liquidity": "adv_liquidity",
+    "Broker Target Upside": "broker_target_upside",
+    "BrokerTP_Upside": "broker_target_upside",
+    "Broker_Target_Upside": "broker_target_upside",
+    "Peer Target Upside": "peer_target_upside",
+    "Peer_Target_Upside": "peer_target_upside",
+    "Price 6mo vs TPX": "price_6mo_vs_tpx",
+    "Price_6mo_vs_TPX": "price_6mo_vs_tpx",
+    "PARA Target Upside": "para_target_upside",
+    "PARA_Target_Upside": "para_target_upside",
+    "ParaTP_Upside": "para_target_upside",
+}
 
 # Supplement columns that can override or fill J-Quants-derived values.
 _SUPPLEMENT_METRIC_COLS: list[str] = [
@@ -55,53 +70,18 @@ _SUPPLEMENT_METRIC_COLS: list[str] = [
 # Google Sheet loader
 # ---------------------------------------------------------------------------
 
-def load_gsheet_supplement(url: str = GSHEET_CSV_URL) -> pd.DataFrame:
-    """Load supplementary valuation metrics from the PARA.FS.data sheet.
+def _load_valuation_supplement() -> pd.DataFrame:
+    """Load valuation-related columns from the PARA.FS.data Google Sheet.
 
-    The sheet is read via its public CSV export URL.  A ``Code`` column
-    is required as the join key; any columns matching known valuation
-    metric names are coerced to numeric and returned.
-
-    Args:
-        url: CSV export URL for the Google Sheet.
+    Uses :class:`~src.data.gsheets.GoogleSheetsClient` with
+    :data:`_COLUMN_MAP` to normalise sheet column names.
 
     Returns:
-        DataFrame indexed by ``Code`` with available supplement columns.
-        Returns an empty DataFrame if the sheet is unreachable, empty,
-        or missing a ``Code`` column.
+        DataFrame indexed by ``Code`` with supplement columns.
+        Empty DataFrame on failure.
     """
-    try:
-        df = pd.read_csv(url)
-    except Exception as exc:
-        logger.warning(
-            "Could not load valuation supplement sheet: %s. "
-            "Supplement metrics will be unavailable.",
-            exc,
-        )
-        return pd.DataFrame()
-
-    if df.empty or "Code" not in df.columns:
-        logger.info(
-            "Valuation supplement sheet is empty or missing 'Code' column; "
-            "supplement metrics unavailable."
-        )
-        return pd.DataFrame()
-
-    df["Code"] = df["Code"].astype(str).str.strip()
-    df = df.set_index("Code")
-
-    # Keep only recognised metric columns and coerce to numeric.
-    keep = [c for c in df.columns if c in _SUPPLEMENT_METRIC_COLS]
-    df = df[keep]
-    for col in keep:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    logger.info(
-        "Loaded valuation supplement: %d rows, columns: %s",
-        len(df),
-        keep,
-    )
-    return df
+    client = GoogleSheetsClient(column_map=_COLUMN_MAP)
+    return client.read_sheet(gid=_VALUATION_SHEET_GID)
 
 
 # ---------------------------------------------------------------------------
@@ -148,25 +128,25 @@ def compute_valuation_metrics(
 
     **J-Quants-derived metrics** (computed when source columns are present):
 
-    * ``pbr_vs_10yr`` — Current PBR (Price / BookValuePerShare).  Best-effort
+    * ``pbr_vs_10yr`` -- Current PBR (Price / BookValuePerShare).  Best-effort
       proxy; the Google Sheet provides the true ratio vs 10yr average when
       available.
-    * ``pen_vs_10yr`` — Current PE (Price / EarningsPerShare).  Same caveat
+    * ``pen_vs_10yr`` -- Current PE (Price / EarningsPerShare).  Same caveat
       as PBR; sheet overrides with the 10yr-relative value.
-    * ``pegn`` — PE / annualised forecast earnings growth (%).  Uses F1 EPS
+    * ``pegn`` -- PE / annualised forecast earnings growth (%).  Uses F1 EPS
       growth, falling back to annualised F2 growth.
-    * ``adv_liquidity`` — Trailing average daily traded value
+    * ``adv_liquidity`` -- Trailing average daily traded value
       (AdjustmentClose * Volume).
-    * ``peer_target_upside`` — Sector median PE * company F2 EPS / current
-      price − 1.  Peer-implied upside.
-    * ``price_6mo_vs_tpx`` — Stock 6-month return minus TOPIX 6-month
+    * ``peer_target_upside`` -- Sector median PE * company F2 EPS / current
+      price - 1.  Peer-implied upside.
+    * ``price_6mo_vs_tpx`` -- Stock 6-month return minus TOPIX 6-month
       return.  Requires daily bars and a TOPIX index DataFrame.
 
-    **Supplement-only metrics** (loaded from the PARA.FS.data Google Sheet):
+    **Supplement-only metrics** (loaded from PARA.FS.data via gsheets adapter):
 
-    * ``broker_target_upside`` — Consensus target upside.  Requires
+    * ``broker_target_upside`` -- Consensus target upside.  Requires
       Bloomberg BEST / IBES; sourced via the supplement sheet.
-    * ``para_target_upside`` — Proprietary PARA model target upside.
+    * ``para_target_upside`` -- Proprietary PARA model target upside.
       Populated externally.
 
     The supplement sheet also acts as a fallback for all J-Quants-derived
@@ -212,10 +192,6 @@ def compute_valuation_metrics(
     # ==================================================================
     # 1. PBR vs 10yr average
     # ==================================================================
-    # Full metric is current PBR / 10yr-avg PBR.  With only ~6 months of
-    # daily bars we compute current PBR as a cross-sectional proxy.  The
-    # Google Sheet overrides with the true historical ratio when available.
-
     if "_latest_price" in df.columns and "BookValuePerShare" in df.columns:
         bvps = df["BookValuePerShare"].replace(0, np.nan)
         df["pbr_vs_10yr"] = df["_latest_price"] / bvps
@@ -225,27 +201,21 @@ def compute_valuation_metrics(
     # ==================================================================
     # 2. PEn vs 10yr average
     # ==================================================================
-    # Same approach as PBR: current PE as proxy, sheet provides the full
-    # 10yr-relative value.
-
     if "_latest_price" in df.columns and "EarningsPerShare" in df.columns:
         eps = df["EarningsPerShare"].copy()
-        eps[eps <= 0] = np.nan  # PE undefined for negative earnings
+        eps[eps <= 0] = np.nan
         df["pen_vs_10yr"] = df["_latest_price"] / eps
     else:
         logger.debug("Missing columns for pen_vs_10yr")
 
     # ==================================================================
-    # 3. PEGn — PE / forecast earnings growth
+    # 3. PEGn -- PE / forecast earnings growth
     # ==================================================================
-
     if "_latest_price" in df.columns and "EarningsPerShare" in df.columns:
         eps = df["EarningsPerShare"].copy()
         eps[eps <= 0] = np.nan
         pe = df["_latest_price"] / eps
 
-        # Prefer 1-year forward growth (F1/F0); fall back to annualised
-        # 2-year forward growth ((F2/F0)^0.5 − 1).
         growth_pct = pd.Series(np.nan, index=df.index)
 
         if "ForecastEarningsPerShare" in df.columns:
@@ -254,19 +224,16 @@ def compute_valuation_metrics(
         elif "NextYearForecastEarningsPerShare" in df.columns:
             f2_eps = df["NextYearForecastEarningsPerShare"]
             ratio = _safe_ratio(f2_eps, eps)
-            # Annualise 2-year growth: (ratio^0.5 − 1) × 100
             growth_pct = (np.power(ratio.clip(lower=0), 0.5) - 1) * 100
 
-        # PEG meaningful only with positive growth above 1%.
         growth_pct[growth_pct <= 1.0] = np.nan
         df["pegn"] = pe / growth_pct
     else:
         logger.debug("Missing columns for pegn")
 
     # ==================================================================
-    # 4. ADV liquidity — trailing average daily value traded
+    # 4. ADV liquidity -- trailing average daily value traded
     # ==================================================================
-
     if has_prices and {"Volume"}.issubset(prices.columns) and code_col is not None:
         px = prices.copy()
         px["_daily_value"] = px["AdjustmentClose"] * px["Volume"]
@@ -276,16 +243,13 @@ def compute_valuation_metrics(
         logger.debug("Missing data for adv_liquidity")
 
     # ==================================================================
-    # 5. Broker target upside — external data only
+    # 5. Broker target upside -- external data only
     # ==================================================================
     # Cannot be derived from J-Quants.  Loaded from supplement sheet below.
 
     # ==================================================================
     # 6. Peer target upside
     # ==================================================================
-    # Peer-implied price = sector median PE × company F2 EPS.
-    # Upside = implied_price / current_price − 1.
-
     if (
         "_latest_price" in df.columns
         and "EarningsPerShare" in df.columns
@@ -294,13 +258,11 @@ def compute_valuation_metrics(
         eps = df["EarningsPerShare"].copy()
         eps[eps <= 0] = np.nan
         pe = df["_latest_price"] / eps
-        # Cap extreme PEs to prevent sector median distortion.
         pe_clipped = pe.clip(lower=0, upper=200)
         df["_pe_clipped"] = pe_clipped
 
         peer_median_pe = df.groupby("Sector33Code")["_pe_clipped"].transform("median")
 
-        # Use F2 EPS (NextYearForecast) preferred; fall back to F1.
         f_eps: Optional[pd.Series] = None
         if "NextYearForecastEarningsPerShare" in df.columns:
             f_eps = df["NextYearForecastEarningsPerShare"]
@@ -321,8 +283,6 @@ def compute_valuation_metrics(
     # ==================================================================
     # 7. Price 6mo vs TOPIX
     # ==================================================================
-    # Stock 6-month return minus TOPIX 6-month return.
-
     if (
         topix is not None
         and not topix.empty
@@ -334,7 +294,6 @@ def compute_valuation_metrics(
         last_price = px.groupby("Code")["AdjustmentClose"].last()
         stock_return = _safe_ratio(last_price - first_price, first_price)
 
-        # TOPIX return over the same window.
         topix_sorted = topix.sort_values("Date")
         tpx_return = np.nan
         if "Close" in topix_sorted.columns and len(topix_sorted) >= 2:
@@ -358,18 +317,18 @@ def compute_valuation_metrics(
         logger.debug("TOPIX index data not provided; skipping price_6mo_vs_tpx")
 
     # ==================================================================
-    # 8. PARA target upside — proprietary
+    # 8. PARA target upside -- proprietary
     # ==================================================================
     # Not computed here.  Loaded from supplement sheet below.
 
     # ==================================================================
-    # Merge supplement data from PARA.FS.data Google Sheet
+    # Merge supplement data from PARA.FS.data via gsheets adapter
     # ==================================================================
     # The sheet is the authoritative source for broker_target_upside,
     # para_target_upside, and the true PBR/PE vs 10yr ratios.  It also
     # provides fallback values for the other metrics.
 
-    supplement = load_gsheet_supplement()
+    supplement = _load_valuation_supplement()
 
     if not supplement.empty and code_col is not None:
         for metric_col in _SUPPLEMENT_METRIC_COLS:
@@ -379,7 +338,6 @@ def compute_valuation_metrics(
             supp_values = code_col.map(supplement[metric_col])
 
             if metric_col in df.columns:
-                # Fill only where the J-Quants-derived value is missing.
                 before_nulls = df[metric_col].isna().sum()
                 df[metric_col] = df[metric_col].fillna(
                     pd.Series(supp_values.values, index=df.index),
@@ -387,7 +345,7 @@ def compute_valuation_metrics(
                 filled = before_nulls - df[metric_col].isna().sum()
             else:
                 df[metric_col] = supp_values.values
-                filled = pd.Series(supp_values.values).notna().sum()
+                filled = int(pd.Series(supp_values.values).notna().sum())
 
             if filled > 0:
                 logger.info(
