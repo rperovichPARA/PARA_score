@@ -1,0 +1,77 @@
+name: PARA Score Pipeline
+
+on:
+  schedule:
+    # Weekly: Saturday 01:00 UTC
+    - cron: "0 1 * * 6"
+  workflow_dispatch:
+    inputs:
+      universe:
+        description: "Comma-separated security codes, or 'all' for full universe"
+        required: false
+        default: "all"
+      dry_run:
+        description: "Write payload to artifact instead of uploading"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  score:
+    name: Run scoring pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scoring pipeline
+        env:
+          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+          GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
+        run: |
+          UNIVERSE="${{ github.event.inputs.universe || 'all' }}"
+          python -m src.pipeline \
+            --universe "$UNIVERSE" \
+            --output-dir ./output \
+            --log-level INFO
+
+      - name: Export and upload scores
+        env:
+          PARA_SCORE_UPLOAD_KEY: ${{ secrets.PARA_SCORE_UPLOAD_KEY }}
+          RENDER_API_URL: ${{ secrets.RENDER_API_URL }}
+        run: |
+          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+          if [ "$DRY_RUN" = "true" ]; then
+            python -m src.export \
+              --input ./output/scores.csv \
+              --dry-run \
+              --output-file ./output/payload.json
+          else
+            python -m src.export \
+              --input ./output/scores.csv \
+              --upload \
+              --dry-run \
+              --output-file ./output/payload.json
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: para-scores-${{ github.run_id }}
+          path: |
+            output/scores.csv
+            output/scores.xlsx
+            output/payload.json
+          retention-days: 30
