@@ -1,10 +1,10 @@
 """Category 1: Fundamentals scoring.
 
 Computes growth, profitability, leverage, and financial health metrics.
-Combines J-Quants financial statement data with supplementary data from
-the PARA.FS.data Google Sheet for metrics not fully available via the
-J-Quants Standard plan (Altman Z-Score, net cash / market cap, and
-growth metric overrides).
+J-Quants is the **primary** data source.  The PARA.FS.data Google Sheet
+provides gap-fill values only for metrics J-Quants cannot compute
+(Altman Z-Score, net cash / market cap) and fills NaN gaps in
+J-Quants-derived metrics — it never overwrites a J-Quants value.
 
 Google Sheet reference (PARA.FS.data):
     https://docs.google.com/spreadsheets/d/10mjEbmtJC6y5tCqnQ_SrUQAfheDhafAtpX0DjJJO5fk/edit?gid=0#gid=0
@@ -153,10 +153,9 @@ def compute_fundamentals_metrics(
     * ``altman_z`` — Altman Z-Score.  Not derivable from J-Quants
       summary data; sourced externally via the supplement sheet.
 
-    The supplement sheet also acts as a fallback for the growth and
-    profitability metrics above: if a company's J-Quants data is
-    missing a value but the sheet has one, the sheet value fills the
-    gap.
+    **J-Quants is the primary data source.**  The supplement sheet only
+    gap-fills where J-Quants data is missing (NaN).  It never overwrites
+    a J-Quants-derived value.
 
     Args:
         financials: Prepared financials DataFrame with J-Quants fields.
@@ -272,9 +271,10 @@ def compute_fundamentals_metrics(
     # ==================================================================
     # 3. Merge supplement data from PARA.FS.data Google Sheet
     # ==================================================================
-    # The sheet is the authoritative source for altman_z and
-    # net_cash_mktcap, and provides fallback values for the growth
-    # and profitability metrics where J-Quants data is incomplete.
+    # J-Quants is the PRIMARY data source.  The sheet provides gap-fill
+    # values only — it never overwrites a J-Quants-derived value.
+    # For metrics like altman_z and net_cash_mktcap that J-Quants
+    # Standard-plan cannot compute, the sheet is the sole source.
 
     supplement = load_gsheet_supplement()
 
@@ -288,19 +288,20 @@ def compute_fundamentals_metrics(
             supp_values = join_key.map(supplement[metric_col])
 
             if metric_col in df.columns:
-                # Fill only where the J-Quants-derived value is missing.
+                # J-Quants is primary: only fill where J-Quants value is NaN.
                 before_nulls = df[metric_col].isna().sum()
                 df[metric_col] = df[metric_col].fillna(
                     pd.Series(supp_values.values, index=df.index),
                 )
                 filled = before_nulls - df[metric_col].isna().sum()
             else:
+                # Metric not computable from J-Quants; sheet is sole source.
                 df[metric_col] = supp_values.values
                 filled = pd.Series(supp_values.values).notna().sum()
 
             if filled > 0:
                 logger.info(
-                    "Supplement filled %d values for %s", filled, metric_col,
+                    "Supplement gap-filled %d values for %s", filled, metric_col,
                 )
 
     # ==================================================================

@@ -294,9 +294,12 @@ class GoogleSheetsClient:
         """Merge supplement metrics into an existing company DataFrame.
 
         Joins on the ``Code`` column (or index) of *target*.  By
-        default, supplement values only fill gaps (``NaN``); set
-        ``overwrite=True`` to let the sheet values replace existing
-        non-null values.
+        default, supplement values only fill gaps (``NaN``).
+
+        **J-Quants is the primary data source.**  The default
+        ``overwrite=False`` ensures J-Quants-derived values are never
+        replaced by sheet values.  Use ``overwrite=True`` only for
+        metrics that have no J-Quants source at all.
 
         Parameters
         ----------
@@ -319,6 +322,13 @@ class GoogleSheetsClient:
         supplement = self.get_supplement_metrics(gid=gid, spreadsheet_id=spreadsheet_id)
         if supplement.empty:
             return target.copy()
+
+        if overwrite:
+            logger.warning(
+                "merge_into called with overwrite=True — this will replace "
+                "J-Quants-derived values with sheet values.  J-Quants should "
+                "be the primary source for any metric it can compute."
+            )
 
         df = target.copy()
 

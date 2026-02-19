@@ -136,6 +136,8 @@ def score_category(df, metric_defs):
 
 ## Data Sources
 
+> **Data source priority: J-Quants is the primary source of truth.** When both J-Quants and Google Sheets (or any other supplement) have a value for the same metric on the same company, the J-Quants value wins. The supplement only gap-fills where J-Quants data is NaN. This is enforced via `fillna()` in all scoring modules — supplement data never overwrites a J-Quants-derived value.
+
 ### Primary: J-Quants API (api.jquants.com)
 - **Listed companies**: `/listed/info` — universe, sector codes, company names
 - **Financial summaries**: `/fins/statements` — income statement, balance sheet summary, forecasts

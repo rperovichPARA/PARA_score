@@ -206,19 +206,20 @@ def compute_kozo_metrics(financials: pd.DataFrame) -> pd.DataFrame:
             supp_values = code_col.map(supplement[metric_col])
 
             if metric_col in df.columns:
-                # Fill only where the existing value is missing.
+                # J-Quants is primary: only fill where J-Quants value is NaN.
                 before_nulls = df[metric_col].isna().sum()
                 df[metric_col] = df[metric_col].fillna(
                     pd.Series(supp_values.values, index=df.index),
                 )
                 filled = before_nulls - df[metric_col].isna().sum()
             else:
+                # Metric not computable from J-Quants; sheet is sole source.
                 df[metric_col] = supp_values.values
                 filled = int(pd.Series(supp_values.values).notna().sum())
 
             if filled > 0:
                 logger.info(
-                    "Kozo supplement filled %d values for %s",
+                    "Kozo supplement gap-filled %d values for %s",
                     filled, metric_col,
                 )
 

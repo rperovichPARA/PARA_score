@@ -3,10 +3,10 @@
 Covers relative valuation vs history, liquidity, price momentum,
 and target price upside metrics.
 
-Combines J-Quants financial statements and daily bars with supplementary
-data from the PARA.FS.data Google Sheet for metrics not available via
-J-Quants alone (broker target upside, PARA target upside, historical
-PBR/PE averages).
+J-Quants is the **primary** data source.  The PARA.FS.data Google Sheet
+provides gap-fill values only for metrics J-Quants cannot compute
+(broker target upside, PARA target upside) and fills NaN gaps in
+J-Quants-derived metrics — it never overwrites a J-Quants value.
 
 Google Sheet reference (PARA.FS.data):
     https://docs.google.com/spreadsheets/d/10mjEbmtJC6y5tCqnQ_SrUQAfheDhafAtpX0DjJJO5fk/edit?gid=0#gid=0
@@ -169,9 +169,9 @@ def compute_valuation_metrics(
     * ``para_target_upside`` — Proprietary PARA model target upside.
       Populated externally.
 
-    The supplement sheet also acts as a fallback for all J-Quants-derived
-    metrics: if a company's computed value is missing but the sheet has
-    one, the sheet value fills the gap.
+    **J-Quants is the primary data source.**  The supplement sheet only
+    gap-fills where J-Quants data is missing (NaN).  It never overwrites
+    a J-Quants-derived value.
 
     Args:
         financials: Prepared financials DataFrame with J-Quants fields.
@@ -365,9 +365,10 @@ def compute_valuation_metrics(
     # ==================================================================
     # Merge supplement data from PARA.FS.data Google Sheet
     # ==================================================================
-    # The sheet is the authoritative source for broker_target_upside,
-    # para_target_upside, and the true PBR/PE vs 10yr ratios.  It also
-    # provides fallback values for the other metrics.
+    # J-Quants is the PRIMARY data source.  The sheet provides gap-fill
+    # values only — it never overwrites a J-Quants-derived value.
+    # For metrics like broker_target_upside and para_target_upside that
+    # J-Quants cannot compute, the sheet is the sole source.
 
     supplement = load_gsheet_supplement()
 
@@ -379,19 +380,20 @@ def compute_valuation_metrics(
             supp_values = code_col.map(supplement[metric_col])
 
             if metric_col in df.columns:
-                # Fill only where the J-Quants-derived value is missing.
+                # J-Quants is primary: only fill where J-Quants value is NaN.
                 before_nulls = df[metric_col].isna().sum()
                 df[metric_col] = df[metric_col].fillna(
                     pd.Series(supp_values.values, index=df.index),
                 )
                 filled = before_nulls - df[metric_col].isna().sum()
             else:
+                # Metric not computable from J-Quants; sheet is sole source.
                 df[metric_col] = supp_values.values
                 filled = pd.Series(supp_values.values).notna().sum()
 
             if filled > 0:
                 logger.info(
-                    "Supplement filled %d values for %s", filled, metric_col,
+                    "Supplement gap-filled %d values for %s", filled, metric_col,
                 )
 
     # ==================================================================
