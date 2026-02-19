@@ -24,12 +24,12 @@ import yaml
 from dotenv import load_dotenv
 
 from src.data.jquants import JQuantsClient
-from src.scoring.composite import compute_composite_scores
-from src.scoring.factors import compute_factor_metrics, score_factors
-from src.scoring.fundamentals import compute_fundamentals_metrics, score_fundamentals
-from src.scoring.kozo import compute_kozo_metrics, score_kozo
-from src.scoring.sector import compute_sector_metrics, score_sector
-from src.scoring.valuation import compute_valuation_metrics, score_valuation
+from src.scoring.composite import CATEGORY_NAMES, compute_composite_scores
+from src.scoring.factors import compute_factor_metrics
+from src.scoring.fundamentals import compute_fundamentals_metrics
+from src.scoring.kozo import compute_kozo_metrics
+from src.scoring.sector import compute_sector_metrics
+from src.scoring.valuation import compute_valuation_metrics
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -150,6 +150,44 @@ def _deduplicate_financials(financials: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+def _write_excel(
+    results: pd.DataFrame,
+    category_dfs: dict[str, pd.DataFrame],
+    output_path: str,
+) -> None:
+    """Write scoring results to an Excel workbook with per-category sheets.
+
+    Sheets:
+        * **Composite** — Main scores and rankings.
+        * **Fundamentals** — Raw fundamentals metrics.
+        * **Valuation** — Raw valuation metrics.
+        * **Sector** — Raw sector metrics.
+        * **Factors** — Raw factor/theme metrics.
+        * **Kozo** — Raw kozo (value impact) metrics.
+
+    Args:
+        results: Composite scores DataFrame (output of
+            :func:`~src.scoring.composite.compute_composite_scores`).
+        category_dfs: Dict of category name -> metric DataFrame.
+        output_path: Full path for the ``.xlsx`` file.
+    """
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        results.to_excel(writer, sheet_name="Composite", index=False)
+
+        for cat_name in CATEGORY_NAMES:
+            if cat_name not in category_dfs:
+                continue
+            sheet_name = cat_name.capitalize()
+            cat_df = category_dfs[cat_name]
+            cat_df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    logger.info("Excel workbook written to %s", output_path)
+
+
+# ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
@@ -164,8 +202,9 @@ def run_pipeline(
     2. Pull listed companies and filter to the scoring universe.
     3. Fetch financial statements and daily prices.
     4. Compute metrics for all five scoring categories.
-    5. Score each category and compute VI / SP composites.
-    6. Write ranked results to ``output_dir/scores.csv``.
+    5. Pass category DataFrames to composite scorer for VI / SP.
+    6. Write ranked results to ``output_dir/scores.csv`` and
+       ``output_dir/scores.xlsx`` (with per-category sheets).
 
     Args:
         universe_codes: Explicit security codes to score.  ``None`` or
@@ -246,30 +285,19 @@ def run_pipeline(
     factors_df = compute_factor_metrics(financials)
     kozo_df = compute_kozo_metrics(fundamentals_df)
 
-    # ── 5. Score categories ───────────────────────────────────────────
-    logger.info("Scoring categories...")
-    category_scores: dict[str, pd.Series] = {
-        "fundamentals": score_fundamentals(fundamentals_df, config_path),
-        "valuation": score_valuation(valuation_df, config_path),
-        "sector": score_sector(sector_df, config_path),
-        "factors": score_factors(factors_df, config_path),
-        "kozo": score_kozo(kozo_df, config_path),
+    category_dfs: dict[str, pd.DataFrame] = {
+        "fundamentals": fundamentals_df,
+        "valuation": valuation_df,
+        "sector": sector_df,
+        "factors": factors_df,
+        "kozo": kozo_df,
     }
 
-    for cat_name, scores in category_scores.items():
-        non_zero = (scores != 0).sum()
-        logger.info(
-            "  %-15s  non-zero scores: %d / %d",
-            cat_name, non_zero, len(scores),
-        )
-
-    # ── 6. Composite scoring ──────────────────────────────────────────
+    # ── 5. Composite scoring ──────────────────────────────────────────
     logger.info("Computing composite VI / SP scores...")
-    results = compute_composite_scores(category_scores, config_path)
+    results = compute_composite_scores(category_dfs, config_path)
 
     # Attach company identifiers for readability.
-    if "Code" in financials.columns:
-        results.insert(0, "Code", financials["Code"].values[: len(results)])
     for info_col in ("CompanyName", "CompanyNameEnglish", "Sector33Code"):
         if info_col in universe.columns:
             col_map = universe.set_index(
@@ -286,11 +314,15 @@ def run_pipeline(
     score_cols = [c for c in results.columns if c not in id_cols]
     results = results[id_cols + score_cols]
 
-    # ── 7. Write output ───────────────────────────────────────────────
+    # ── 6. Write output ───────────────────────────────────────────────
     os.makedirs(output_dir, exist_ok=True)
+
     csv_path = os.path.join(output_dir, "scores.csv")
     results.to_csv(csv_path, index=False)
     logger.info("Scores written to %s  (%d companies)", csv_path, len(results))
+
+    xlsx_path = os.path.join(output_dir, "scores.xlsx")
+    _write_excel(results, category_dfs, xlsx_path)
 
     # Summary for user.
     if "VI_rank" in results.columns:
@@ -327,7 +359,7 @@ def main() -> None:
         type=str,
         default="",
         help=(
-            "Directory for output files (scores.csv).  Defaults to the "
+            "Directory for output files (scores.csv, scores.xlsx).  Defaults to the "
             "OUTPUT_DIR environment variable, then ./output."
         ),
     )
