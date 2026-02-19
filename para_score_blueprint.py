@@ -1,97 +1,67 @@
+"""PARA Score serving blueprint — pure read layer for pre-computed scores.
+
+This Flask blueprint caches the JSON payload uploaded by the scoring
+pipeline (via ``POST /para-score/upload``) and serves it through
+lightweight GET endpoints consumed by n8n AI agents and internal tools.
+
+No computation happens here.  Scores are pre-computed by the pipeline
+in ``src/pipeline.py``, formatted by ``src/export.py``, and POSTed to
+the ``/para-score/upload`` endpoint on a weekly cron via GitHub Actions.
+
+Endpoints
+---------
+GET  /para-score             Full scored universe
+GET  /para-score/stock/<code>  Single stock breakdown
+GET  /para-score/top/<n>     Top N stocks (sort by VI or SP)
+GET  /para-score/screen      Filter by score thresholds, rank caps, sector
+GET  /para-score/summary     Coverage stats and score distributions
+GET  /para-score/status      Cache freshness check
+POST /para-score/upload      Receive pre-computed JSON (bearer-token auth)
 """
-PARA Score Blueprint
-====================
-Adds /para-score endpoints to the portfolio-optimizer Flask app.
 
-Endpoints:
-    GET  /para-score                    Latest cached scores (fast, <100ms)
-    GET  /para-score/stock/<code>       Single stock breakdown
-    GET  /para-score/top/<n>            Top N stocks (sort by VI or SP)
-    GET  /para-score/screen             Filter by score thresholds, rank caps, sector
-    GET  /para-score/summary            Coverage stats and score distributions
-    GET  /para-score/status             Cache freshness check
-    POST /para-score/upload             Receive pre-computed JSON (bearer-token auth)
+from __future__ import annotations
 
-Caching:
-    Results are cached to disk as JSON.  The scoring pipeline
-    (GitHub Actions, weekly cron) POSTs pre-computed scores to
-    /para-score/upload.  All GET endpoints serve from the cached file.
-
-This is a pure serving layer -- no imports from the PARA_score repo.
-"""
-
-import json
+import logging
 import os
 from datetime import datetime, timezone
+from typing import Any, Optional
 
 import numpy as np
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
+
+logger = logging.getLogger(__name__)
 
 para_score_bp = Blueprint("para_score", __name__)
 
 # ---------------------------------------------------------------------------
-# Cache configuration
+# In-memory cache
 # ---------------------------------------------------------------------------
 
-CACHE_DIR = os.environ.get("PARA_SCORE_CACHE_DIR", "/tmp/para_score")
-CACHE_FILE = os.path.join(CACHE_DIR, "latest_scores.json")
+_cache: dict[str, Any] = {
+    "scores": [],
+    "metadata": {},
+    "coverage": {},
+    "uploaded_at": None,
+}
 
 
-def _ensure_cache_dir():
-    os.makedirs(CACHE_DIR, exist_ok=True)
-
-
-def _read_cache():
-    """Read cached scores from disk.  Returns dict or None."""
-    if not os.path.exists(CACHE_FILE):
-        return None
-    try:
-        with open(CACHE_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-def _write_cache(data: dict):
-    """Write scores payload to disk with upload timestamp."""
-    _ensure_cache_dir()
-    data["_uploaded_at"] = datetime.now(timezone.utc).isoformat()
-    with open(CACHE_FILE, "w") as f:
-        json.dump(data, f, default=str)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _build_code_index(scores: list) -> dict:
-    """Build a code -> record lookup from the scores list."""
-    index = {}
-    for record in scores:
-        code = str(record.get("code", "")).strip()
-        if code:
-            index[code] = record
-    return index
-
-
-def _percentile(values: list, pct: float) -> float:
-    """Compute a percentile from a list of floats."""
-    if not values:
-        return 0.0
-    return float(np.percentile(values, pct))
+def _get_cache() -> dict[str, Any]:
+    """Return the current cache dict."""
+    return _cache
 
 
 # ---------------------------------------------------------------------------
 # Auth helper
 # ---------------------------------------------------------------------------
 
-def _check_upload_auth():
+def _check_upload_auth() -> Optional[Response]:
     """Validate Bearer token for upload endpoint.
 
-    Returns None if authorised, or a (response, status) tuple otherwise.
+    Returns ``None`` if authorised, or a JSON error ``Response`` otherwise.
     """
-    expected = os.environ.get("PARA_SCORE_UPLOAD_KEY", "")
+    expected = os.getenv("PARA_SCORE_UPLOAD_KEY", "")
     if not expected:
+        logger.error("PARA_SCORE_UPLOAD_KEY not configured on server")
         return jsonify({"error": "Upload not configured"}), 500
 
     auth_header = request.headers.get("Authorization", "")
@@ -106,14 +76,36 @@ def _check_upload_auth():
 
 
 # ---------------------------------------------------------------------------
+# Lookup helpers
+# ---------------------------------------------------------------------------
+
+def _build_code_index(scores: list[dict]) -> dict[str, dict]:
+    """Build a code -> record lookup from the scores list."""
+    index: dict[str, dict] = {}
+    for record in scores:
+        code = str(record.get("code", "")).strip()
+        if code:
+            index[code] = record
+    return index
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    """Compute a percentile from a sorted list of floats."""
+    if not values:
+        return 0.0
+    arr = np.array(values)
+    return float(np.percentile(arr, pct))
+
+
+# ---------------------------------------------------------------------------
 # POST /para-score/upload
 # ---------------------------------------------------------------------------
 
 @para_score_bp.route("/para-score/upload", methods=["POST"])
-def upload_scores():
+def upload_scores() -> tuple[Response, int]:
     """Receive pre-computed scores JSON from the pipeline.
 
-    Expects::
+    Expects the payload schema documented in ``src/export.py``::
 
         {
             "scores": [...],
@@ -131,9 +123,13 @@ def upload_scores():
     if not data or "scores" not in data:
         return jsonify({"error": "Invalid payload: 'scores' key required"}), 400
 
-    _write_cache(data)
+    _cache["scores"] = data["scores"]
+    _cache["metadata"] = data.get("metadata", {})
+    _cache["coverage"] = data.get("coverage", {})
+    _cache["uploaded_at"] = datetime.now(timezone.utc).isoformat()
 
     count = len(data["scores"])
+    logger.info("Scores uploaded: %d records cached", count)
     return jsonify({"status": "ok", "scores_cached": count}), 200
 
 
@@ -142,16 +138,16 @@ def upload_scores():
 # ---------------------------------------------------------------------------
 
 @para_score_bp.route("/para-score", methods=["GET"])
-def get_all_scores():
+def get_all_scores() -> tuple[Response, int]:
     """Return the full scored universe."""
-    cached = _read_cache()
-    if not cached or not cached.get("scores"):
+    cache = _get_cache()
+    if not cache["scores"]:
         return jsonify({"error": "No scores available", "hint": "Pipeline has not uploaded yet"}), 404
 
     return jsonify({
-        "scores": cached["scores"],
-        "metadata": cached.get("metadata", {}),
-        "count": len(cached["scores"]),
+        "scores": cache["scores"],
+        "metadata": cache["metadata"],
+        "count": len(cache["scores"]),
     }), 200
 
 
@@ -160,14 +156,16 @@ def get_all_scores():
 # ---------------------------------------------------------------------------
 
 @para_score_bp.route("/para-score/stock/<code>", methods=["GET"])
-def get_stock_score(code):
+def get_stock_score(code: str) -> tuple[Response, int]:
     """Return score breakdown for a single stock by code."""
-    cached = _read_cache()
-    if not cached or not cached.get("scores"):
+    cache = _get_cache()
+    if not cache["scores"]:
         return jsonify({"error": "No scores available"}), 404
 
-    index = _build_code_index(cached["scores"])
-    record = index.get(code.strip())
+    index = _build_code_index(cache["scores"])
+    code = code.strip()
+
+    record = index.get(code)
     if record is None:
         return jsonify({"error": f"Stock {code} not found"}), 404
 
@@ -179,14 +177,14 @@ def get_stock_score(code):
 # ---------------------------------------------------------------------------
 
 @para_score_bp.route("/para-score/top/<int:n>", methods=["GET"])
-def get_top_scores(n):
+def get_top_scores(n: int) -> tuple[Response, int]:
     """Return the top *n* stocks sorted by VI or SP score.
 
     Query params:
         sort: ``vi`` (default) or ``sp``
     """
-    cached = _read_cache()
-    if not cached or not cached.get("scores"):
+    cache = _get_cache()
+    if not cache["scores"]:
         return jsonify({"error": "No scores available"}), 404
 
     sort_by = request.args.get("sort", "vi").lower()
@@ -195,7 +193,7 @@ def get_top_scores(n):
 
     score_key = "VI_score" if sort_by == "vi" else "SP_score"
 
-    scored = [s for s in cached["scores"] if s.get(score_key) is not None]
+    scored = [s for s in cache["scores"] if s.get(score_key) is not None]
     scored.sort(key=lambda s: s[score_key], reverse=True)
 
     n = max(1, min(n, len(scored)))
@@ -212,7 +210,7 @@ def get_top_scores(n):
 # ---------------------------------------------------------------------------
 
 @para_score_bp.route("/para-score/screen", methods=["GET"])
-def screen_scores():
+def screen_scores() -> tuple[Response, int]:
     """Filter scores by thresholds, rank caps, sector, and limit.
 
     Query params:
@@ -223,12 +221,13 @@ def screen_scores():
         sector:       Exact sector name match
         limit:        Max number of results (default: all)
     """
-    cached = _read_cache()
-    if not cached or not cached.get("scores"):
+    cache = _get_cache()
+    if not cache["scores"]:
         return jsonify({"error": "No scores available"}), 404
 
-    results = list(cached["scores"])
+    results = list(cache["scores"])
 
+    # --- Apply filters -------------------------------------------------------
     min_vi = request.args.get("min_vi", type=float)
     if min_vi is not None:
         results = [s for s in results if (s.get("VI_score") or -float("inf")) >= min_vi]
@@ -274,15 +273,15 @@ def screen_scores():
 # ---------------------------------------------------------------------------
 
 @para_score_bp.route("/para-score/summary", methods=["GET"])
-def get_summary():
+def get_summary() -> tuple[Response, int]:
     """Return coverage stats and score distribution summaries."""
-    cached = _read_cache()
-    if not cached or not cached.get("scores"):
+    cache = _get_cache()
+    if not cache["scores"]:
         return jsonify({"error": "No scores available"}), 404
 
-    scores = cached["scores"]
+    scores = cache["scores"]
 
-    def _distribution(key):
+    def _distribution(key: str) -> dict[str, Any]:
         vals = [s[key] for s in scores if s.get(key) is not None]
         if not vals:
             return {"count": 0}
@@ -307,15 +306,16 @@ def get_summary():
         "kozo_score": _distribution("kozo_score"),
     }
 
-    sector_counts = {}
+    # Sector breakdown
+    sector_counts: dict[str, int] = {}
     for s in scores:
         sec = s.get("sector", "Unknown")
         sector_counts[sec] = sector_counts.get(sec, 0) + 1
 
     return jsonify({
         "universe_size": len(scores),
-        "metadata": cached.get("metadata", {}),
-        "coverage": cached.get("coverage", {}),
+        "metadata": cache["metadata"],
+        "coverage": cache["coverage"],
         "distributions": distributions,
         "sector_counts": sector_counts,
     }), 200
@@ -326,25 +326,14 @@ def get_summary():
 # ---------------------------------------------------------------------------
 
 @para_score_bp.route("/para-score/status", methods=["GET"])
-def get_status():
+def get_status() -> tuple[Response, int]:
     """Return cache freshness info."""
-    cached = _read_cache()
-    if not cached:
-        return jsonify({
-            "has_data": False,
-            "scores_count": 0,
-            "uploaded_at": None,
-            "pipeline_run": None,
-            "pipeline_version": None,
-            "universe_size": None,
-        }), 200
-
-    metadata = cached.get("metadata", {})
+    cache = _get_cache()
     return jsonify({
-        "has_data": bool(cached.get("scores")),
-        "scores_count": len(cached.get("scores", [])),
-        "uploaded_at": cached.get("_uploaded_at"),
-        "pipeline_run": metadata.get("run_timestamp"),
-        "pipeline_version": metadata.get("pipeline_version"),
-        "universe_size": metadata.get("universe_size"),
+        "has_data": bool(cache["scores"]),
+        "scores_count": len(cache["scores"]),
+        "uploaded_at": cache["uploaded_at"],
+        "pipeline_run": cache["metadata"].get("run_timestamp"),
+        "pipeline_version": cache["metadata"].get("pipeline_version"),
+        "universe_size": cache["metadata"].get("universe_size"),
     }), 200
