@@ -202,7 +202,7 @@ def main() -> None:
     print("=" * 70)
     errors = []
     # Check top-level keys
-    for key in ["scores", "metadata", "coverage"]:
+    for key in ["stocks", "metadata", "coverage"]:
         if key not in payload:
             errors.append(f"Missing top-level key: {key}")
 
@@ -211,7 +211,7 @@ def main() -> None:
                              "VI_rank", "SP_rank", "fundamentals_score",
                              "valuation_score", "sector_score", "factors_score",
                              "kozo_score"]
-    for i, rec in enumerate(payload.get("scores", [])):
+    for i, rec in enumerate(payload.get("stocks", [])):
         for field in required_score_fields:
             if field not in rec:
                 errors.append(f"scores[{i}] missing field: {field}")

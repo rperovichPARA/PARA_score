@@ -116,7 +116,7 @@ def upload_scores():
     Expects::
 
         {
-            "scores": [...],
+            "stocks": [...],
             "metadata": {...},
             "coverage": {...}
         }
@@ -128,13 +128,13 @@ def upload_scores():
         return auth_err
 
     data = request.get_json(silent=True)
-    if not data or "scores" not in data:
-        return jsonify({"error": "Invalid payload: 'scores' key required"}), 400
+    if not data or "stocks" not in data:
+        return jsonify({"error": "Payload must include a non-empty stocks array"}), 400
 
     _write_cache(data)
 
-    count = len(data["scores"])
-    return jsonify({"status": "ok", "scores_cached": count}), 200
+    count = len(data["stocks"])
+    return jsonify({"status": "ok", "stocks_cached": count}), 200
 
 
 # ---------------------------------------------------------------------------
@@ -145,13 +145,13 @@ def upload_scores():
 def get_all_scores():
     """Return the full scored universe."""
     cached = _read_cache()
-    if not cached or not cached.get("scores"):
+    if not cached or not cached.get("stocks"):
         return jsonify({"error": "No scores available", "hint": "Pipeline has not uploaded yet"}), 404
 
     return jsonify({
-        "scores": cached["scores"],
+        "stocks": cached["stocks"],
         "metadata": cached.get("metadata", {}),
-        "count": len(cached["scores"]),
+        "count": len(cached["stocks"]),
     }), 200
 
 
@@ -163,10 +163,10 @@ def get_all_scores():
 def get_stock_score(code):
     """Return score breakdown for a single stock by code."""
     cached = _read_cache()
-    if not cached or not cached.get("scores"):
+    if not cached or not cached.get("stocks"):
         return jsonify({"error": "No scores available"}), 404
 
-    index = _build_code_index(cached["scores"])
+    index = _build_code_index(cached["stocks"])
     record = index.get(code.strip())
     if record is None:
         return jsonify({"error": f"Stock {code} not found"}), 404
@@ -186,7 +186,7 @@ def get_top_scores(n):
         sort: ``vi`` (default) or ``sp``
     """
     cached = _read_cache()
-    if not cached or not cached.get("scores"):
+    if not cached or not cached.get("stocks"):
         return jsonify({"error": "No scores available"}), 404
 
     sort_by = request.args.get("sort", "vi").lower()
@@ -195,7 +195,7 @@ def get_top_scores(n):
 
     score_key = "VI_score" if sort_by == "vi" else "SP_score"
 
-    scored = [s for s in cached["scores"] if s.get(score_key) is not None]
+    scored = [s for s in cached["stocks"] if s.get(score_key) is not None]
     scored.sort(key=lambda s: s[score_key], reverse=True)
 
     n = max(1, min(n, len(scored)))
@@ -203,7 +203,7 @@ def get_top_scores(n):
     return jsonify({
         "sort": sort_by,
         "count": n,
-        "scores": scored[:n],
+        "stocks": scored[:n],
     }), 200
 
 
@@ -224,10 +224,10 @@ def screen_scores():
         limit:        Max number of results (default: all)
     """
     cached = _read_cache()
-    if not cached or not cached.get("scores"):
+    if not cached or not cached.get("stocks"):
         return jsonify({"error": "No scores available"}), 404
 
-    results = list(cached["scores"])
+    results = list(cached["stocks"])
 
     min_vi = request.args.get("min_vi", type=float)
     if min_vi is not None:
@@ -265,7 +265,7 @@ def screen_scores():
                 "limit": limit,
             }.items() if v is not None
         },
-        "scores": results,
+        "stocks": results,
     }), 200
 
 
@@ -277,10 +277,10 @@ def screen_scores():
 def get_summary():
     """Return coverage stats and score distribution summaries."""
     cached = _read_cache()
-    if not cached or not cached.get("scores"):
+    if not cached or not cached.get("stocks"):
         return jsonify({"error": "No scores available"}), 404
 
-    scores = cached["scores"]
+    scores = cached["stocks"]
 
     def _distribution(key):
         vals = [s[key] for s in scores if s.get(key) is not None]
@@ -341,8 +341,8 @@ def get_status():
 
     metadata = cached.get("metadata", {})
     return jsonify({
-        "has_data": bool(cached.get("scores")),
-        "scores_count": len(cached.get("scores", [])),
+        "has_data": bool(cached.get("stocks")),
+        "scores_count": len(cached.get("stocks", [])),
         "uploaded_at": cached.get("_uploaded_at"),
         "pipeline_run": metadata.get("run_timestamp"),
         "pipeline_version": metadata.get("pipeline_version"),
