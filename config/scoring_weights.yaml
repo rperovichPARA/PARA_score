@@ -58,10 +58,7 @@ valuation:
   para_target_upside:    [0.40, true]
 
 sector:
-  cyclical_momentum:     [0.20, true]
-  sector_trend_fund:     [0.30, true]
-  sector_trend_val:      [0.20, true]
-  competitive_strength:  [0.30, true]
+  sector_alpha:          [1.00, true]    # Factor-adjusted alpha z-score from sector rotation signals
 
 factors:
   price_momentum_6m:     [0.25, true]    # 6-month excess return vs TOPIX
