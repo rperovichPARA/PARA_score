@@ -1,12 +1,11 @@
-"""J-Quants API client and data retrieval.
+"""J-Quants API V2 client and data retrieval.
 
-Handles authentication (refresh token -> ID token) and data fetching
-for listed companies, financial statements, daily quotes, and TOPIX index.
+Handles authentication and data fetching for listed companies, financial
+statements, daily quotes, and TOPIX index.
 
-Authentication flow:
-    1. Store your J-Quants refresh token as JQUANTS_API_KEY in .env
-    2. Client exchanges refresh token for a short-lived ID token
-    3. ID token is cached and automatically refreshed on expiry
+Authentication:
+    Store your J-Quants API key as JQUANTS_API_KEY in .env.
+    The V2 API uses a simple ``x-api-key`` header — no token exchange needed.
 """
 
 import logging
@@ -22,10 +21,7 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://api.jquants.com/v1"
-
-# J-Quants ID tokens are valid for 24 hours; refresh well before expiry.
-_TOKEN_REFRESH_MARGIN_SECONDS = 3600  # refresh 1 hour early
+BASE_URL = "https://api.jquants.com/v2"
 
 # Retry configuration for transient HTTP errors.
 _MAX_RETRIES = 4
@@ -38,12 +34,12 @@ class JQuantsError(Exception):
 
 
 class JQuantsClient:
-    """Client for the J-Quants API (api.jquants.com/v1).
+    """Client for the J-Quants API V2 (api.jquants.com/v2).
 
     Parameters
     ----------
     api_key : str, optional
-        J-Quants refresh token.  Falls back to ``JQUANTS_API_KEY`` env var.
+        J-Quants API key.  Falls back to ``JQUANTS_API_KEY`` env var.
     """
 
     def __init__(self, api_key: Optional[str] = None) -> None:
@@ -53,48 +49,12 @@ class JQuantsClient:
                 "No J-Quants API key provided. Set JQUANTS_API_KEY in .env "
                 "or pass api_key to JQuantsClient()."
             )
-        self._id_token: Optional[str] = None
-        self._token_acquired_at: Optional[datetime] = None
-
-    # ── authentication ───────────────────────────────────────────────
-
-    def _token_is_valid(self) -> bool:
-        """Return True if the cached ID token is still usable."""
-        if self._id_token is None or self._token_acquired_at is None:
-            return False
-        elapsed = (datetime.utcnow() - self._token_acquired_at).total_seconds()
-        return elapsed < (86400 - _TOKEN_REFRESH_MARGIN_SECONDS)
-
-    def _refresh_id_token(self) -> str:
-        """Exchange refresh token for a new ID token."""
-        logger.debug("Requesting new J-Quants ID token.")
-        resp = requests.post(
-            f"{BASE_URL}/token/auth_refresh",
-            params={"refreshtoken": self.api_key},
-            timeout=30,
-        )
-        if resp.status_code != 200:
-            raise JQuantsError(
-                f"Token refresh failed (HTTP {resp.status_code}): {resp.text}"
-            )
-        data = resp.json()
-        self._id_token = data["idToken"]
-        self._token_acquired_at = datetime.utcnow()
-        logger.info("J-Quants ID token acquired successfully.")
-        return self._id_token
-
-    def _get_id_token(self) -> str:
-        """Return a valid ID token, refreshing if necessary."""
-        if self._token_is_valid():
-            return self._id_token  # type: ignore[return-value]
-        return self._refresh_id_token()
 
     # ── low-level HTTP ───────────────────────────────────────────────
 
     def _get(self, endpoint: str, params: Optional[dict] = None) -> dict:
         """Authenticated GET with retry on transient errors."""
-        token = self._get_id_token()
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"x-api-key": self.api_key}
         url = f"{BASE_URL}{endpoint}"
         merged_params = params or {}
 
@@ -126,14 +86,6 @@ class JQuantsClient:
                     resp.status_code, endpoint, attempt, _MAX_RETRIES, wait,
                 )
                 time.sleep(wait)
-                continue
-
-            if resp.status_code == 401:
-                # Token may have been invalidated server-side; force refresh.
-                logger.info("Received 401; forcing token refresh.")
-                self._id_token = None
-                token = self._get_id_token()
-                headers["Authorization"] = f"Bearer {token}"
                 continue
 
             if resp.status_code != 200:
@@ -200,7 +152,7 @@ class JQuantsClient:
         if date:
             params["date"] = date
 
-        records = self._get_paginated("/listed/info", "info", params)
+        records = self._get_paginated("/equities/master", "data", params)
         df = pd.DataFrame(records)
         logger.info("Listed companies fetched: %d rows.", len(df))
         return df
@@ -226,7 +178,7 @@ class JQuantsClient:
         Returns
         -------
         pd.DataFrame
-            Columns from J-Quants ``/fins/statements`` including revenue,
+            Columns from J-Quants ``/fins/summary`` including revenue,
             operating profit, forecasts, per-share data, etc.
         """
         params: dict = {}
@@ -235,7 +187,7 @@ class JQuantsClient:
         if date:
             params["date"] = date
 
-        records = self._get_paginated("/fins/statements", "statements", params)
+        records = self._get_paginated("/fins/summary", "data", params)
         df = pd.DataFrame(records)
 
         # Convert numeric columns that J-Quants returns as strings.
@@ -300,7 +252,7 @@ class JQuantsClient:
             params["date"] = date
 
         records = self._get_paginated(
-            "/prices/daily_quotes", "daily_quotes", params
+            "/equities/bars/daily", "data", params
         )
         df = pd.DataFrame(records)
 
@@ -348,7 +300,7 @@ class JQuantsClient:
         if date_to:
             params["to"] = date_to
 
-        records = self._get_paginated("/indices/topix", "topix", params)
+        records = self._get_paginated("/indices/bars/daily/topix", "data", params)
         df = pd.DataFrame(records)
 
         if not df.empty:

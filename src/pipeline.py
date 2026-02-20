@@ -119,7 +119,7 @@ def _filter_universe(
 def _deduplicate_financials(financials: pd.DataFrame) -> pd.DataFrame:
     """Keep the most recent financial statement per security code.
 
-    J-Quants ``/fins/statements`` may return multiple disclosures per
+    J-Quants ``/fins/summary`` may return multiple disclosures per
     company (quarterly, annual, revisions).  We keep the row with the
     latest ``DisclosedDate`` for each ``Code``.
 
