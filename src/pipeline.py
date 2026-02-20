@@ -280,15 +280,16 @@ def run_pipeline(
         )
 
     # Fetch recent daily quotes for valuation / liquidity metrics.
+    # V2 API requires 'code' or 'date' — iterate per code like financials.
     today = datetime.utcnow().strftime("%Y-%m-%d")
     six_months_ago = (datetime.utcnow() - timedelta(days=180)).strftime("%Y-%m-%d")
-    logger.info("Fetching daily quotes (%s to %s)...", six_months_ago, today)
-    prices = client.get_daily_quotes(date_from=six_months_ago, date_to=today)
-
-    if not prices.empty and "Code" in prices.columns:
-        prices = prices[
-            prices["Code"].astype(str).str.strip().isin(universe_code_list)
-        ]
+    logger.info("Fetching daily quotes (%s to %s) for %d codes...",
+                six_months_ago, today, len(universe_code_list))
+    prices = client.get_daily_quotes_bulk(
+        codes=universe_code_list,
+        date_from=six_months_ago,
+        date_to=today,
+    )
     logger.info("Daily quotes for universe: %d rows", len(prices))
 
     # Fetch TOPIX index for the same window (needed for price_6mo_vs_tpx).
