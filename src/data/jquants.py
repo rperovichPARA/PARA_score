@@ -417,6 +417,56 @@ class JQuantsClient:
         logger.info("TOPIX index fetched: %d rows.", len(df))
         return df
 
+    def get_financial_statements_bulk(
+        self, codes: list[str]
+    ) -> pd.DataFrame:
+        """Fetch financial statements for multiple security codes.
+
+        The V2 ``/fins/summary`` endpoint requires at least ``code`` or
+        ``date`` as a parameter.  This method iterates over *codes*, fetches
+        statements for each one individually, and concatenates the results.
+
+        Parameters
+        ----------
+        codes : list[str]
+            Security codes (4- or 5-digit).
+
+        Returns
+        -------
+        pd.DataFrame
+            Combined financial statements for all requested codes.
+        """
+        if not codes:
+            logger.warning("get_financial_statements_bulk called with empty code list.")
+            return pd.DataFrame()
+
+        frames: list[pd.DataFrame] = []
+        total = len(codes)
+        for i, code in enumerate(codes, 1):
+            if i % 200 == 0 or i == total:
+                logger.info(
+                    "Fetching financial statements: %d / %d codes...", i, total
+                )
+            try:
+                df = self.get_financial_statements(code=code)
+                if not df.empty:
+                    frames.append(df)
+            except Exception:
+                logger.warning(
+                    "Failed to fetch financials for code %s; skipping.", code
+                )
+
+        if not frames:
+            logger.warning("No financial statements retrieved for any code.")
+            return pd.DataFrame()
+
+        combined = pd.concat(frames, ignore_index=True)
+        logger.info(
+            "Bulk financial statements: %d rows for %d / %d codes.",
+            len(combined), len(frames), total,
+        )
+        return combined
+
     # ── bulk / convenience helpers ───────────────────────────────────
 
     def get_all_financial_statements(self, date: str) -> pd.DataFrame:

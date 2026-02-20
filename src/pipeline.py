@@ -261,15 +261,11 @@ def run_pipeline(
     universe_code_list = universe["Code"].astype(str).str.strip().tolist()
 
     # ── 3. Fetch financial statements and prices ──────────────────────
-    logger.info("Fetching financial statements...")
-    financials = client.get_financial_statements()
+    logger.info("Fetching financial statements for %d codes...", len(universe_code_list))
+    financials = client.get_financial_statements_bulk(universe_code_list)
     logger.info("Raw financial statements: %d rows", len(financials))
 
-    # Restrict to universe and deduplicate
-    if "Code" in financials.columns:
-        financials = financials[
-            financials["Code"].astype(str).str.strip().isin(universe_code_list)
-        ]
+    # Deduplicate (keep most recent disclosure per code)
     financials = _deduplicate_financials(financials)
     logger.info("Financials for universe: %d companies", len(financials))
 
