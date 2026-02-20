@@ -341,6 +341,12 @@ class JQuantsClient:
             Columns include ``Date``, ``Code``, ``Open``, ``High``, ``Low``,
             ``Close``, ``Volume``, ``AdjustmentClose``, etc.
         """
+        if not code and not date:
+            raise JQuantsError(
+                "V2 /equities/bars/daily requires at least 'code' or 'date'. "
+                "Use get_daily_quotes_bulk() to iterate over multiple codes."
+            )
+
         params: dict = {}
         if code:
             params["code"] = code
@@ -463,6 +469,71 @@ class JQuantsClient:
         combined = pd.concat(frames, ignore_index=True)
         logger.info(
             "Bulk financial statements: %d rows for %d / %d codes.",
+            len(combined), len(frames), total,
+        )
+        return combined
+
+    def get_daily_quotes_bulk(
+        self,
+        codes: list[str],
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """Fetch daily quotes for multiple security codes.
+
+        The V2 ``/equities/bars/daily`` endpoint requires at least ``code``
+        or ``date`` as a parameter.  This method iterates over *codes*,
+        fetches quotes for each one individually, and concatenates the
+        results.
+
+        Parameters
+        ----------
+        codes : list[str]
+            Security codes (4- or 5-digit).
+        date_from : str, optional
+            Start date (``YYYY-MM-DD``), inclusive.
+        date_to : str, optional
+            End date (``YYYY-MM-DD``), inclusive.
+
+        Returns
+        -------
+        pd.DataFrame
+            Combined daily OHLCV data for all requested codes.
+        """
+        if not codes:
+            logger.warning("get_daily_quotes_bulk called with empty code list.")
+            return pd.DataFrame()
+
+        frames: list[pd.DataFrame] = []
+        total = len(codes)
+        for i, code in enumerate(codes, 1):
+            if i % 200 == 0 or i == total:
+                logger.info(
+                    "Fetching daily quotes: %d / %d codes...", i, total
+                )
+            try:
+                df = self.get_daily_quotes(
+                    code=code, date_from=date_from, date_to=date_to
+                )
+                if not df.empty:
+                    frames.append(df)
+            except Exception:
+                logger.warning(
+                    "Failed to fetch daily quotes for code %s; skipping.", code
+                )
+
+        if not frames:
+            logger.warning("No daily quotes retrieved for any code.")
+            return pd.DataFrame()
+
+        combined = pd.concat(frames, ignore_index=True)
+
+        if not combined.empty and "Date" in combined.columns:
+            combined.sort_values(["Code", "Date"], inplace=True)
+            combined.reset_index(drop=True, inplace=True)
+
+        logger.info(
+            "Bulk daily quotes: %d rows for %d / %d codes.",
             len(combined), len(frames), total,
         )
         return combined
