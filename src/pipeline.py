@@ -28,7 +28,7 @@ from src.scoring.composite import CATEGORY_NAMES, compute_composite_scores
 from src.scoring.factors import compute_factor_metrics
 from src.scoring.fundamentals import compute_fundamentals_metrics
 from src.scoring.kozo import compute_kozo_metrics
-from src.scoring.sector import compute_sector_metrics
+from src.scoring.sector import compute_sector_metrics, fetch_sector_signals
 from src.scoring.valuation import compute_valuation_metrics
 
 load_dotenv()
@@ -269,15 +269,14 @@ def run_pipeline(
     financials = _deduplicate_financials(financials)
     logger.info("Financials for universe: %d companies", len(financials))
 
-    # Carry Sector33Code from listed-company data into financials for
-    # kozo peer-group calculations.
-    if "Sector33Code" not in financials.columns and "Sector33Code" in universe.columns:
-        sector_map = (
-            universe.set_index(universe["Code"].astype(str).str.strip())["Sector33Code"]
-        )
-        financials["Sector33Code"] = (
-            financials["Code"].astype(str).str.strip().map(sector_map)
-        )
+    # Carry sector codes from listed-company data into financials for
+    # kozo peer-group calculations (Sector33Code) and sector
+    # attractiveness scoring (Sector17Code / Sector17CodeName).
+    code_index = universe.set_index(universe["Code"].astype(str).str.strip())
+    fin_codes = financials["Code"].astype(str).str.strip()
+    for sector_col in ("Sector33Code", "Sector17Code", "Sector17CodeName"):
+        if sector_col not in financials.columns and sector_col in universe.columns:
+            financials[sector_col] = fin_codes.map(code_index[sector_col]).values
 
     # Fetch recent daily quotes for valuation / liquidity metrics.
     # V2 API requires 'code' or 'date' — iterate per code like financials.
@@ -301,7 +300,13 @@ def run_pipeline(
     logger.info("Computing category metrics...")
     fundamentals_df = compute_fundamentals_metrics(financials, prices)
     valuation_df = compute_valuation_metrics(financials, prices, topix=topix)
-    sector_df = compute_sector_metrics(financials)
+
+    # Fetch sector rotation signals from the portfoliotools Render
+    # service and pass them to the sector scoring module.
+    logger.info("Fetching sector signals from Render...")
+    sector_signals = fetch_sector_signals()
+    sector_df = compute_sector_metrics(financials, sector_signals=sector_signals)
+
     factors_df = compute_factor_metrics(financials, prices, topix=topix)
     kozo_df = compute_kozo_metrics(fundamentals_df)
 
