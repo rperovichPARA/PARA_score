@@ -365,3 +365,147 @@ class TestScoringLogic:
         assert result.iloc[0] == 2.0
         assert pd.isna(result.iloc[1])
         assert pd.isna(result.iloc[2])
+
+
+class TestV2CodeFormat:
+    """Tests for V2 API code format handling (5-digit codes)."""
+
+    def test_normalise_code_5digit_to_4digit(self):
+        """_normalise_code strips trailing check digit from 5-digit codes."""
+        from src.pipeline import _normalise_code
+        assert _normalise_code("72030") == "7203"
+        assert _normalise_code("67580") == "6758"
+        assert _normalise_code("83060") == "8306"
+
+    def test_normalise_code_4digit_passthrough(self):
+        """_normalise_code passes 4-digit codes through unchanged."""
+        from src.pipeline import _normalise_code
+        assert _normalise_code("7203") == "7203"
+        assert _normalise_code("6758") == "6758"
+
+    def test_filter_universe_matches_5digit_vs_4digit(self):
+        """_filter_universe matches 4-digit user codes against 5-digit V2 codes."""
+        from src.pipeline import _filter_universe
+
+        # Simulate V2 listed data with 5-digit codes
+        listed = pd.DataFrame({
+            "Code": ["72030", "67580", "83060", "99840", "68610"],
+            "CompanyName": ["Toyota", "Sony", "MUFG", "SoftBank", "Keyence"],
+            "MarketCode": ["0111"] * 5,
+        })
+
+        config = {"universe": {"market_codes": []}}
+
+        # User passes 4-digit codes
+        result = _filter_universe(listed, config, codes=["7203", "6758"])
+        assert len(result) == 2
+        assert set(result["Code"]) == {"72030", "67580"}
+
+    def test_filter_universe_matches_5digit_vs_5digit(self):
+        """_filter_universe also works when user passes 5-digit codes."""
+        from src.pipeline import _filter_universe
+
+        listed = pd.DataFrame({
+            "Code": ["72030", "67580", "83060"],
+            "MarketCode": ["0111"] * 3,
+        })
+
+        config = {"universe": {"market_codes": []}}
+
+        result = _filter_universe(listed, config, codes=["72030", "67580"])
+        assert len(result) == 2
+
+    def test_filter_universe_market_code_v2(self):
+        """MarketCode filtering works with V2 column name (after rename)."""
+        from src.pipeline import _filter_universe
+
+        listed = pd.DataFrame({
+            "Code": ["72030", "67580", "83060"],
+            "MarketCode": ["0111", "0112", "0111"],
+        })
+
+        config = {"universe": {"market_codes": ["0111"]}}
+
+        result = _filter_universe(listed, config)
+        assert len(result) == 2
+        assert set(result["Code"]) == {"72030", "83060"}
+
+    def test_v2_column_rename_listed(self):
+        """V2 abbreviated listed column names are renamed to V1 names."""
+        from src.data.jquants import _rename_v2_columns, _V2_LISTED_COLUMNS
+
+        df = pd.DataFrame({
+            "Code": ["72030"],
+            "CoName": ["トヨタ自動車"],
+            "CoNameEn": ["Toyota Motor Corp"],
+            "S33": ["3050"],
+            "Mkt": ["0111"],
+        })
+        _rename_v2_columns(df, _V2_LISTED_COLUMNS)
+
+        assert "CompanyName" in df.columns
+        assert "CompanyNameEnglish" in df.columns
+        assert "Sector33Code" in df.columns
+        assert "MarketCode" in df.columns
+        assert df["MarketCode"].iloc[0] == "0111"
+
+    def test_v2_column_rename_fins(self):
+        """V2 abbreviated financial column names are renamed to V1 names."""
+        from src.data.jquants import _rename_v2_columns, _V2_FINS_COLUMNS
+
+        df = pd.DataFrame({
+            "Code": ["72030"],
+            "DiscDate": ["2025-11-01"],
+            "Sales": ["30000000"],
+            "OP": ["3000000"],
+            "NP": ["2500000"],
+            "Eq": ["25000000"],
+            "EqAR": ["41.7"],
+            "EPS": ["180.0"],
+            "BPS": ["1800.0"],
+            "FOP": ["3200000"],
+            "NxFSales": ["32000000"],
+            "NxFOP": ["3400000"],
+            "PayoutRatioAnn": ["30.0"],
+            "ShOutFY": ["1000000"],
+        })
+        _rename_v2_columns(df, _V2_FINS_COLUMNS)
+
+        assert "DisclosedDate" in df.columns
+        assert "NetSales" in df.columns
+        assert "OperatingProfit" in df.columns
+        assert "Profit" in df.columns
+        assert "Equity" in df.columns
+        assert "EquityToAssetRatio" in df.columns
+        assert "EarningsPerShare" in df.columns
+        assert "BookValuePerShare" in df.columns
+        assert "ForecastOperatingProfit" in df.columns
+        assert "NextYearForecastNetSales" in df.columns
+        assert "NextYearForecastOperatingProfit" in df.columns
+        assert "ResultPayoutRatioAnnual" in df.columns
+        assert "NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYearIncludingTreasuryStock" in df.columns
+
+    def test_v2_column_rename_daily(self):
+        """V2 abbreviated daily quote column names are renamed to V1 names."""
+        from src.data.jquants import _rename_v2_columns, _V2_DAILY_COLUMNS
+
+        df = pd.DataFrame({
+            "Code": ["72030"],
+            "Date": ["2025-12-01"],
+            "O": [2400.0],
+            "H": [2450.0],
+            "L": [2380.0],
+            "C": [2420.0],
+            "Vo": [3000000],
+            "Va": [7260000000],
+            "AdjC": [2420.0],
+        })
+        _rename_v2_columns(df, _V2_DAILY_COLUMNS)
+
+        assert "Open" in df.columns
+        assert "High" in df.columns
+        assert "Low" in df.columns
+        assert "Close" in df.columns
+        assert "Volume" in df.columns
+        assert "TurnoverValue" in df.columns
+        assert "AdjustmentClose" in df.columns

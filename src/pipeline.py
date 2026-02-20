@@ -5,7 +5,7 @@ category scoring -> composite scoring -> ranked output.
 
 CLI usage::
 
-    python -m src.pipeline --universe 72030,86970 --output-dir ./output
+    python -m src.pipeline --universe 7203,8697 --output-dir ./output
     python -m src.pipeline --universe all --output-dir ./output
 """
 
@@ -59,6 +59,24 @@ def load_pipeline_config(config_path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Code normalisation helpers
+# ---------------------------------------------------------------------------
+
+def _normalise_code(code: str) -> str:
+    """Return the 4-digit base security code.
+
+    J-Quants V2 returns 5-digit codes where the 5th character is a check
+    digit (e.g. ``"72030"`` for Toyota 7203).  Users typically pass the
+    4-digit form.  We strip the trailing check digit so both formats can
+    be compared consistently.
+    """
+    code = code.strip()
+    if len(code) == 5 and code.isdigit():
+        return code[:4]
+    return code
+
+
+# ---------------------------------------------------------------------------
 # Universe filtering
 # ---------------------------------------------------------------------------
 
@@ -74,7 +92,8 @@ def _filter_universe(
         config: Parsed YAML config (expects ``universe.market_codes``).
         codes: Optional explicit list of security codes to keep.  When
             provided, only these codes are retained (market-code filtering
-            is still applied first).
+            is still applied first).  Accepts both 4-digit (``"7203"``)
+            and 5-digit (``"72030"``) formats.
 
     Returns:
         Filtered DataFrame.
@@ -98,15 +117,19 @@ def _filter_universe(
         )
 
     # --- Explicit security-code filter ---
+    # V2 returns 5-digit codes; users may pass 4- or 5-digit.  Normalise
+    # both sides to the 4-digit base code for matching.
     if codes and "Code" in df.columns:
-        code_set = {c.strip() for c in codes}
+        code_set = {_normalise_code(c) for c in codes}
         before = len(df)
-        df = df[df["Code"].astype(str).str.strip().isin(code_set)]
+        df_code_norm = df["Code"].astype(str).map(_normalise_code)
+        df = df[df_code_norm.isin(code_set)]
         logger.info(
             "Security-code filter (%d requested): %d -> %d companies",
             len(code_set), before, len(df),
         )
-        missing = code_set - set(df["Code"].astype(str).str.strip())
+        matched = set(df["Code"].astype(str).map(_normalise_code))
+        missing = code_set - matched
         if missing:
             logger.warning("Requested codes not found in universe: %s", missing)
 
@@ -350,8 +373,9 @@ def main() -> None:
         default="all",
         help=(
             "Comma-separated security codes to score, or 'all' for the full "
-            "universe (filtered by market codes in the config).  "
-            "Example: --universe 72030,86970,99840"
+            "universe (filtered by market codes in the config).  Accepts both "
+            "4-digit (7203) and 5-digit V2 (72030) formats.  "
+            "Example: --universe 7203,6758,8306"
         ),
     )
     parser.add_argument(
