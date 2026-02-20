@@ -302,7 +302,7 @@ def run_pipeline(
     fundamentals_df = compute_fundamentals_metrics(financials, prices)
     valuation_df = compute_valuation_metrics(financials, prices, topix=topix)
     sector_df = compute_sector_metrics(financials)
-    factors_df = compute_factor_metrics(financials)
+    factors_df = compute_factor_metrics(financials, prices, topix=topix)
     kozo_df = compute_kozo_metrics(fundamentals_df)
 
     category_dfs: dict[str, pd.DataFrame] = {

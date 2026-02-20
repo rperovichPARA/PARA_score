@@ -171,13 +171,28 @@ class TestPipelineIntegration:
             assert col in result.columns
             assert result[col].isna().all()
 
-    def test_factors_stub(self):
-        """Factors: all metrics should be NaN (stub)."""
-        result = compute_factor_metrics(self.financials)
+    def test_factors_metrics(self):
+        """Factors: momentum, earnings momentum, and volatility from price/financial data."""
+        result = compute_factor_metrics(
+            self.financials, self.prices, topix=self.topix,
+        )
         assert len(result) == 5
-        for col in ["factor_fit", "theme_fit"]:
-            assert col in result.columns
-            assert result[col].isna().all()
+
+        # Price-derived metrics should have data for all 5 stocks.
+        for col in ["price_momentum_6m", "volatility"]:
+            assert col in result.columns, f"Missing metric: {col}"
+            assert result[col].notna().sum() == 5, f"Missing data in {col}"
+
+        # Earnings momentum uses ForecastOP vs actual OP — should be populated.
+        assert "earnings_momentum" in result.columns
+        assert result["earnings_momentum"].notna().sum() == 5
+
+        # 12M momentum should be NaN (only ~6 months of synthetic data).
+        assert "price_momentum_12m" in result.columns
+        assert result["price_momentum_12m"].isna().all()
+
+        # Volatility should be positive for all stocks.
+        assert (result["volatility"] > 0).all()
 
     def test_kozo_metrics(self):
         """Kozo: ROE vs peer, payout ratio, NaN stubs."""
@@ -206,7 +221,7 @@ class TestPipelineIntegration:
                 self.financials, self.prices, topix=self.topix,
             )
             sector_df = compute_sector_metrics(self.financials)
-            factors_df = compute_factor_metrics(self.financials)
+            factors_df = compute_factor_metrics(self.financials, self.prices, topix=self.topix)
             kozo_df = compute_kozo_metrics(fund_df)
 
         category_dfs = {
@@ -244,7 +259,7 @@ class TestPipelineIntegration:
                 self.financials, self.prices, topix=self.topix,
             )
             sector_df = compute_sector_metrics(self.financials)
-            factors_df = compute_factor_metrics(self.financials)
+            factors_df = compute_factor_metrics(self.financials, self.prices, topix=self.topix)
             kozo_df = compute_kozo_metrics(fund_df)
 
         category_dfs = {
@@ -302,7 +317,7 @@ class TestPipelineIntegration:
                 self.financials, self.prices, topix=self.topix,
             )
             sector_df = compute_sector_metrics(self.financials)
-            factors_df = compute_factor_metrics(self.financials)
+            factors_df = compute_factor_metrics(self.financials, self.prices, topix=self.topix)
             kozo_df = compute_kozo_metrics(fund_df)
 
         category_dfs = {

@@ -64,8 +64,10 @@ sector:
   competitive_strength:  [0.30, true]
 
 factors:
-  factor_fit:            [0.50, true]
-  theme_fit:             [0.50, true]
+  price_momentum_6m:     [0.25, true]    # 6-month excess return vs TOPIX
+  price_momentum_12m:    [0.25, true]    # 12-month excess return vs TOPIX (NaN if <12mo data)
+  earnings_momentum:     [0.25, true]    # YoY operating profit change
+  volatility:            [0.25, false]   # Lower annualised vol = better (risk factor)
 
 kozo:
   underperf_segments:    [0.20, true]    # More underperforming segments = more opportunity
