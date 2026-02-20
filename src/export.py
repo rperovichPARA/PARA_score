@@ -7,7 +7,7 @@ portfoliotools Render service, and optionally POSTs it.
 JSON payload schema::
 
     {
-        "scores": [
+        "stocks": [
             {
                 "code": "7203",
                 "name": "Toyota Motor Corp",
@@ -189,13 +189,13 @@ def format_payload(
                 break
 
     payload: dict[str, Any] = {
-        "scores": records,
+        "stocks": records,
         "metadata": metadata,
         "coverage": coverage,
     }
 
     logger.info(
-        "Payload formatted: %d scores, %d coverage metrics",
+        "Payload formatted: %d stocks, %d coverage metrics",
         len(records),
         len(coverage),
     )
@@ -394,7 +394,7 @@ def main() -> None:
         os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
         with open(output_file, "w") as fh:
             json.dump(payload, fh, indent=2, ensure_ascii=False)
-        print(f"Dry-run: payload written to {output_file} ({len(payload['scores'])} scores)")
+        print(f"Dry-run: payload written to {output_file} ({len(payload['stocks'])} stocks)")
 
     # Upload.
     if args.upload:
@@ -404,7 +404,7 @@ def main() -> None:
             upload_key=args.upload_key or None,
         )
         if success:
-            print(f"Upload successful ({len(payload['scores'])} scores)")
+            print(f"Upload successful ({len(payload['stocks'])} stocks)")
         else:
             logger.error("Upload failed.")
             sys.exit(1)

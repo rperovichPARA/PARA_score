@@ -268,13 +268,13 @@ class TestPipelineIntegration:
         payload = format_payload(composite, category_dfs)
 
         # Top-level keys.
-        assert "scores" in payload
+        assert "stocks" in payload
         assert "metadata" in payload
         assert "coverage" in payload
 
         # Scores array.
-        assert len(payload["scores"]) == 5
-        first = payload["scores"][0]
+        assert len(payload["stocks"]) == 5
+        first = payload["stocks"][0]
         assert "code" in first
         assert "name" in first
         assert "sector" in first
@@ -322,7 +322,7 @@ class TestPipelineIntegration:
         try:
             with open(tmp_path, "r") as f:
                 loaded = json.load(f)
-            assert len(loaded["scores"]) == 5
+            assert len(loaded["stocks"]) == 5
             assert loaded["metadata"]["universe_size"] == 5
         finally:
             os.unlink(tmp_path)
