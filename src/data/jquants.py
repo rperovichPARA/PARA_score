@@ -28,6 +28,104 @@ _MAX_RETRIES = 4
 _RETRY_BACKOFF_BASE = 2  # seconds; doubles each attempt
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
+# ---------------------------------------------------------------------------
+# V2 → V1 column name mappings
+# ---------------------------------------------------------------------------
+# The V2 API uses abbreviated column names.  We rename them back to the
+# V1 full names so all downstream scoring code works unchanged.
+
+_V2_LISTED_COLUMNS: dict[str, str] = {
+    "CoName": "CompanyName",
+    "CoNameEn": "CompanyNameEnglish",
+    "S17": "Sector17Code",
+    "S17Nm": "Sector17CodeName",
+    "S33": "Sector33Code",
+    "S33Nm": "Sector33CodeName",
+    "ScaleCat": "ScaleCategory",
+    "Mkt": "MarketCode",
+    "MktNm": "MarketCodeName",
+    "Mrgn": "MarginCode",
+    "MrgnNm": "MarginCodeName",
+}
+
+_V2_FINS_COLUMNS: dict[str, str] = {
+    "DiscDate": "DisclosedDate",
+    "DiscTime": "DisclosedTime",
+    "DiscNo": "DisclosureNumber",
+    "DocType": "TypeOfDocument",
+    "CurPerType": "TypeOfCurrentPeriod",
+    "CurPerSt": "CurrentPeriodStartDate",
+    "CurPerEn": "CurrentPeriodEndDate",
+    "CurFYSt": "CurrentFiscalYearStartDate",
+    "CurFYEn": "CurrentFiscalYearEndDate",
+    "NxtFYSt": "NextFiscalYearStartDate",
+    "NxtFYEn": "NextFiscalYearEndDate",
+    "Sales": "NetSales",
+    "OP": "OperatingProfit",
+    "OdP": "OrdinaryProfit",
+    "NP": "Profit",
+    "EPS": "EarningsPerShare",
+    "DEPS": "DilutedEarningsPerShare",
+    "TA": "TotalAssets",
+    "Eq": "Equity",
+    "EqAR": "EquityToAssetRatio",
+    "BPS": "BookValuePerShare",
+    "CFO": "CashFlowsFromOperatingActivities",
+    "CFI": "CashFlowsFromInvestingActivities",
+    "CFF": "CashFlowsFromFinancingActivities",
+    "CashEq": "CashAndEquivalents",
+    "DivAnn": "ResultDividendPerShareAnnual",
+    "PayoutRatioAnn": "ResultPayoutRatioAnnual",
+    "FDivAnn": "ForecastDividendPerShareAnnual",
+    "FPayoutRatioAnn": "ForecastPayoutRatioAnnual",
+    "NxFDivAnn": "NextYearForecastDividendPerShareAnnual",
+    "NxFPayoutRatioAnn": "NextYearForecastPayoutRatioAnnual",
+    "FSales": "ForecastNetSales",
+    "FOP": "ForecastOperatingProfit",
+    "FOdP": "ForecastOrdinaryProfit",
+    "FNP": "ForecastProfit",
+    "FEPS": "ForecastEarningsPerShare",
+    "NxFSales": "NextYearForecastNetSales",
+    "NxFOP": "NextYearForecastOperatingProfit",
+    "NxFOdP": "NextYearForecastOrdinaryProfit",
+    "NxFNp": "NextYearForecastProfit",
+    "NxFEPS": "NextYearForecastEarningsPerShare",
+    "ShOutFY": "NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYearIncludingTreasuryStock",
+    "TrShFY": "TreasurySharesFiscalYear",
+    "AvgSh": "AverageShares",
+}
+
+_V2_DAILY_COLUMNS: dict[str, str] = {
+    "O": "Open",
+    "H": "High",
+    "L": "Low",
+    "C": "Close",
+    "Vo": "Volume",
+    "Va": "TurnoverValue",
+    "AdjFactor": "AdjustmentFactor",
+    "AdjO": "AdjustmentOpen",
+    "AdjH": "AdjustmentHigh",
+    "AdjL": "AdjustmentLow",
+    "AdjC": "AdjustmentClose",
+    "AdjVo": "AdjustmentVolume",
+}
+
+_V2_TOPIX_COLUMNS: dict[str, str] = {
+    "O": "Open",
+    "H": "High",
+    "L": "Low",
+    "C": "Close",
+}
+
+
+def _rename_v2_columns(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
+    """Rename V2 abbreviated columns to V1 full names (in place, if present)."""
+    rename = {k: v for k, v in mapping.items() if k in df.columns}
+    if rename:
+        df.rename(columns=rename, inplace=True)
+        logger.debug("Renamed V2 columns: %s", list(rename.keys()))
+    return df
+
 
 class JQuantsError(Exception):
     """Raised for J-Quants API errors."""
@@ -154,7 +252,8 @@ class JQuantsClient:
 
         records = self._get_paginated("/equities/master", "data", params)
         df = pd.DataFrame(records)
-        logger.info("Listed companies fetched: %d rows.", len(df))
+        _rename_v2_columns(df, _V2_LISTED_COLUMNS)
+        logger.info("Listed companies fetched: %d rows, columns: %s", len(df), list(df.columns))
         return df
 
     def get_financial_statements(
@@ -189,6 +288,7 @@ class JQuantsClient:
 
         records = self._get_paginated("/fins/summary", "data", params)
         df = pd.DataFrame(records)
+        _rename_v2_columns(df, _V2_FINS_COLUMNS)
 
         # Convert numeric columns that J-Quants returns as strings.
         numeric_hints = [
@@ -255,6 +355,7 @@ class JQuantsClient:
             "/equities/bars/daily", "data", params
         )
         df = pd.DataFrame(records)
+        _rename_v2_columns(df, _V2_DAILY_COLUMNS)
 
         if not df.empty:
             price_cols = [
@@ -302,6 +403,7 @@ class JQuantsClient:
 
         records = self._get_paginated("/indices/bars/daily/topix", "data", params)
         df = pd.DataFrame(records)
+        _rename_v2_columns(df, _V2_TOPIX_COLUMNS)
 
         if not df.empty:
             for col in ["Open", "High", "Low", "Close"]:
