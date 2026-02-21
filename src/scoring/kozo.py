@@ -37,7 +37,7 @@ import numpy as np
 import pandas as pd
 
 from src.data.gsheets import GoogleSheetsClient
-from src.scoring.utils import load_metric_defs, load_scoring_params, score_category
+from src.scoring.utils import load_metric_defs, load_scoring_params, normalise_code, score_category
 
 logger = logging.getLogger(__name__)
 
@@ -197,13 +197,47 @@ def compute_kozo_metrics(financials: pd.DataFrame) -> pd.DataFrame:
     # ==================================================================
     supplement = _load_kozo_supplement()
 
-    if not supplement.empty and code_col is not None:
+    # Normalise code_col to 4-digit base codes so it matches the
+    # supplement index (Google Sheets uses 4-digit codes; J-Quants V2
+    # uses 5-digit codes with a trailing check digit).
+    code_col_norm: Optional[pd.Series] = None
+    if code_col is not None:
+        code_col_norm = code_col.map(normalise_code)
+
+    # ── Diagnostic logging: before merge ──────────────────────────
+    if not supplement.empty:
+        logger.info(
+            "Kozo supplement: %d rows, columns=%s",
+            len(supplement), list(supplement.columns),
+        )
+        logger.info(
+            "Kozo supplement index (first 5): %s",
+            list(supplement.index[:5]),
+        )
+        if code_col is not None:
+            logger.info(
+                "Financials Code (first 5 raw): %s",
+                list(code_col.head()),
+            )
+            logger.info(
+                "Financials Code (first 5 normalised): %s",
+                list(code_col_norm.head()),
+            )
+            matched = code_col_norm.isin(supplement.index).sum()
+            logger.info(
+                "Kozo supplement code match: %d / %d financials codes found in supplement index",
+                matched, len(code_col_norm),
+            )
+    else:
+        logger.warning("Kozo supplement is empty — no Sheets data available.")
+
+    if not supplement.empty and code_col_norm is not None:
         # -- Direct metrics: merge sheet columns into df ---------------
         for metric_col in _DIRECT_METRIC_COLS:
             if metric_col not in supplement.columns:
                 continue
 
-            supp_values = code_col.map(supplement[metric_col])
+            supp_values = code_col_norm.map(supplement[metric_col])
 
             if metric_col in df.columns:
                 # Fill only where the existing value is missing.
@@ -216,15 +250,15 @@ def compute_kozo_metrics(financials: pd.DataFrame) -> pd.DataFrame:
                 df[metric_col] = supp_values.values
                 filled = int(pd.Series(supp_values.values).notna().sum())
 
-            if filled > 0:
-                logger.info(
-                    "Kozo supplement filled %d values for %s",
-                    filled, metric_col,
-                )
+            logger.info(
+                "Kozo supplement %-20s: %d values filled, %d non-null after merge",
+                metric_col, filled,
+                int(df[metric_col].notna().sum()) if metric_col in df.columns else 0,
+            )
 
         # -- Raw Ke for peer comparison --------------------------------
         if "ke" in supplement.columns:
-            raw_ke = code_col.map(supplement["ke"])
+            raw_ke = code_col_norm.map(supplement["ke"])
             df["_ke_raw"] = pd.to_numeric(
                 pd.Series(raw_ke.values, index=df.index), errors="coerce",
             )
