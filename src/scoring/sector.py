@@ -119,18 +119,51 @@ def fetch_sector_signals(render_url: Optional[str] = None) -> dict[str, float]:
     return _parse_sector_signals(data)
 
 
+def _extract_alpha(entry: dict[str, Any]) -> float | None:
+    """Extract the alpha z-score from a sector entry dict.
+
+    Supports both flat keys (``alpha_zscore``, ``alpha_z``, …) and the
+    nested ``factor_adjusted.alpha_zscore`` structure returned by the
+    ``/sector-signals`` endpoint.
+
+    Returns:
+        The alpha z-score as a float, or ``None`` if not found.
+    """
+    # Check nested structure first: {"factor_adjusted": {"alpha_zscore": …}}
+    fa = entry.get("factor_adjusted")
+    if isinstance(fa, dict):
+        nested = fa.get("alpha_zscore") or fa.get("alpha_z") or fa.get("alpha")
+        if nested is not None:
+            try:
+                return float(nested)
+            except (ValueError, TypeError):
+                pass
+
+    # Fall back to flat keys.
+    for key in ("alpha_zscore", "alpha_z", "factor_adjusted_alpha",
+                "z_score", "signal", "score"):
+        val = entry.get(key)
+        if val is not None:
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                continue
+    return None
+
+
 def _parse_sector_signals(data: Any) -> dict[str, float]:
     """Extract a sector-code -> alpha z-score mapping from the API response.
 
     Handles multiple possible response shapes from the
     ``/sector-signals`` endpoint:
 
+    * **Nested**: ``{"signals": {"sectors": [{"sector_code": "TP17AUTO",
+      "factor_adjusted": {"alpha_zscore": 1.2}}, ...]}}``
     * **List of dicts**: ``[{"sector_code": "X", "alpha_z": 1.2}, ...]``
     * **Dict keyed by sector**: ``{"TOPIX17_1": {"alpha_z": 1.2}, ...}``
     * **Simple dict**: ``{"TOPIX17_1": 1.2, ...}``
 
-    The sector code is normalised to a string for consistent lookup
-    against ``Sector17Code`` values from J-Quants.
+    The sector code is normalised to a string for consistent lookup.
 
     Args:
         data: Parsed JSON from the API response.
@@ -141,7 +174,7 @@ def _parse_sector_signals(data: Any) -> dict[str, float]:
     signals: dict[str, float] = {}
 
     if isinstance(data, list):
-        # List of dicts: [{"sector_code": "1", "alpha_z": 0.5}, ...]
+        # List of dicts: [{"sector_code": "TP17AUTO", ...}, ...]
         for entry in data:
             if not isinstance(entry, dict):
                 continue
@@ -153,44 +186,29 @@ def _parse_sector_signals(data: Any) -> dict[str, float]:
                 or entry.get("Sector17Code")
                 or entry.get("name")
             )
-            # Try common key names for the alpha z-score.
-            alpha = (
-                entry.get("alpha_z")
-                or entry.get("alpha_zscore")
-                or entry.get("factor_adjusted_alpha")
-                or entry.get("z_score")
-                or entry.get("signal")
-                or entry.get("score")
-            )
+            alpha = _extract_alpha(entry)
             if sector_key is not None and alpha is not None:
-                try:
-                    signals[str(sector_key)] = float(alpha)
-                except (ValueError, TypeError):
-                    continue
+                signals[str(sector_key)] = alpha
 
     elif isinstance(data, dict):
-        # Could be {"sectors": [...]} wrapper, or direct keyed dict.
+        # Unwrap nested wrappers: {"signals": {"sectors": [...]}}
+        inner = data
+        if "signals" in inner and isinstance(inner["signals"], dict):
+            inner = inner["signals"]
+        if "sectors" in inner and isinstance(inner["sectors"], list):
+            return _parse_sector_signals(inner["sectors"])
+        # Also handle {"signals": [...]} or {"sectors": [...]} directly.
+        if "signals" in data and isinstance(data["signals"], list):
+            return _parse_sector_signals(data["signals"])
         if "sectors" in data and isinstance(data["sectors"], list):
             return _parse_sector_signals(data["sectors"])
-        if "signals" in data and isinstance(data["signals"], (list, dict)):
-            return _parse_sector_signals(data["signals"])
 
         for key, value in data.items():
             if isinstance(value, dict):
                 # Nested dict: {"TOPIX17_1": {"alpha_z": 1.2, ...}}
-                alpha = (
-                    value.get("alpha_z")
-                    or value.get("alpha_zscore")
-                    or value.get("factor_adjusted_alpha")
-                    or value.get("z_score")
-                    or value.get("signal")
-                    or value.get("score")
-                )
+                alpha = _extract_alpha(value)
                 if alpha is not None:
-                    try:
-                        signals[str(key)] = float(alpha)
-                    except (ValueError, TypeError):
-                        continue
+                    signals[str(key)] = alpha
             elif isinstance(value, (int, float)):
                 # Simple dict: {"TOPIX17_1": 1.2, ...}
                 try:
@@ -208,6 +226,88 @@ def _parse_sector_signals(data: Any) -> dict[str, float]:
         logger.warning("No sector signals could be parsed from the response.")
 
     return signals
+
+
+# ---------------------------------------------------------------------------
+# TOPIX-17 sector code mapping
+# ---------------------------------------------------------------------------
+
+# Maps the string sector codes used by the /sector-signals endpoint
+# (e.g. 'TP17AUTO') to the numeric Sector17Code values from J-Quants
+# listed company data.
+TOPIX17_STRING_TO_NUMERIC: dict[str, str] = {
+    "TP17FOOD": "3050",   # Foods
+    "TP17ERGY": "1050",   # Energy Resources
+    "TP17CNST": "2050",   # Construction & Materials
+    "TP17STML": "3200",   # Raw Materials & Chemicals
+    "TP17PHRM": "3250",   # Pharmaceutical
+    "TP17AUTO": "3700",   # Automobile & Transport Equipment
+    "TP17STEL": "3500",   # Steel & Nonferrous Metals
+    "TP17MACH": "3600",   # Machinery
+    "TP17ELEC": "3650",   # Electric Appliances & Precision Instruments
+    "TP17ITTL": "5250",   # IT & Services, Others
+    "TP17ELPR": "7050",   # Electric Power & Gas
+    "TP17TLOG": "5050",   # Transportation & Logistics
+    "TP17TRDG": "6050",   # Trading Companies & Wholesale
+    "TP17RETL": "6100",   # Retail Trade
+    "TP17BNK":  "7100",   # Banks
+    "TP17FNCL": "7150",   # Financials ex Banks
+    "TP17REST": "8050",   # Real Estate
+}
+
+# Reverse mapping: numeric Sector17Code -> string code.
+TOPIX17_NUMERIC_TO_STRING: dict[str, str] = {
+    v: k for k, v in TOPIX17_STRING_TO_NUMERIC.items()
+}
+
+
+def _remap_signals_to_numeric(
+    signals: dict[str, float],
+) -> dict[str, float]:
+    """Convert sector signal keys from string codes to numeric Sector17Code.
+
+    If signal keys are already numeric, returns them unchanged.
+    If they use string codes (e.g. ``'TP17AUTO'``), maps each to
+    its numeric equivalent (e.g. ``'3700'``).  Unmapped keys are
+    preserved as-is with a warning.
+
+    Args:
+        signals: Dict mapping sector identifier to alpha z-score.
+
+    Returns:
+        Dict with numeric Sector17Code keys where possible.
+    """
+    if not signals:
+        return signals
+
+    # Check if keys are already numeric.
+    sample_keys = list(signals.keys())[:3]
+    if all(k.isdigit() for k in sample_keys):
+        return signals
+
+    remapped: dict[str, float] = {}
+    unmapped: list[str] = []
+    for key, value in signals.items():
+        numeric = TOPIX17_STRING_TO_NUMERIC.get(key)
+        if numeric is not None:
+            remapped[numeric] = value
+        else:
+            # Preserve the original key (might match via other fallback logic).
+            remapped[key] = value
+            unmapped.append(key)
+
+    if unmapped:
+        logger.warning(
+            "Sector signal keys not in TOPIX-17 mapping (kept as-is): %s",
+            unmapped,
+        )
+    else:
+        logger.info(
+            "Remapped %d sector signal keys from string to numeric codes.",
+            len(remapped),
+        )
+
+    return remapped
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +374,10 @@ def compute_sector_metrics(
         )
         df["sector_alpha"] = np.nan
         return df
+
+    # Remap string sector codes (e.g. 'TP17AUTO') to numeric codes
+    # (e.g. '3700') so they match the Sector17Code values on stocks.
+    sector_signals = _remap_signals_to_numeric(sector_signals)
 
     # Normalise Sector17Code to string for matching.
     sector_codes = df["Sector17Code"].astype(str).str.strip()
