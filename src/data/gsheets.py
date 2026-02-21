@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -45,6 +46,47 @@ _SCOPES = [
 # ── Defaults ──────────────────────────────────────────────────────────────
 _DEFAULT_SPREADSHEET_ID = "10mjEbmtJC6y5tCqnQ_SrUQAfheDhafAtpX0DjJJO5fk"
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "scoring_weights.yaml"
+
+# ── Sheet-column → YAML-metric mapping ────────────────────────────────────
+# Keys are the *cleaned* sheet column names (after newline/whitespace
+# normalisation).  Values are the metric names from scoring_weights.yaml.
+_DEFAULT_COLUMN_MAP: dict[str, str] = {
+    # ── Fundamentals ──────────────────────────────────────────────────
+    "Sales Growth 2y CAGR": "f2_f0_sales_growth",
+    "EBIT Growth 2y CAGR":  "f2_f0_ebit_growth",
+    "OP Growth F1/F0":      "f1_f0_op_growth",
+    "OP Growth F2/F1":      "f2_f1_op_growth",
+    "OPM":                  "opm",
+    "ROE (l)":              "roe",
+    "NC / Mkt Cap":         "net_cash_mktcap",
+    "Altman Z":             "altman_z",
+    # ── Valuation ─────────────────────────────────────────────────────
+    "PBR vs 10yr avg":      "pbr_vs_10yr",
+    "PEn vs 10yr avg":      "pen_vs_10yr",
+    "PEG n":                "pegn",
+    "ADV(mm USD)":          "adv_liquidity",
+    "ADV (mmUSD)":          "adv_liquidity",   # if newline already stripped
+    "ADV ( mmUSD)":         "adv_liquidity",   # newline replaced with space
+    "ADV(mm)":              "adv_liquidity",   # short variant
+    "Broker Upside":        "broker_target_upside",
+    "Px vs TPX":            "price_6mo_vs_tpx",
+    # ── Factors ───────────────────────────────────────────────────────
+    "β (vol)":              "volatility",
+    # ── Kozo ──────────────────────────────────────────────────────────
+    "NC+LTI / Mkt Cap":     "excess_cash_mktcap",
+    "Land/Mkt Cap":         "land_mktcap",
+    "Payout Ratio":         "payout_ratio",
+    "# of Analysts":        "analyst_coverage",
+    "Board Size":           "board_size",
+    "Ke":                   "ke_vs_peer",
+}
+
+
+def _clean_column_name(name: str) -> str:
+    """Normalise a column header: strip newlines, collapse whitespace."""
+    cleaned = re.sub(r"[\r\n]+", " ", str(name))
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -263,9 +305,63 @@ class GoogleSheetsClient:
             logger.info("Sheet (id=%s, gid=%d) returned no data.", sid, gid)
             return pd.DataFrame()
 
-        # Apply user-supplied column renaming.
-        if self.column_map:
-            df = df.rename(columns=self.column_map)
+        # ── Clean column names (strip newlines, normalise whitespace) ──
+        raw_columns = list(df.columns)
+        df.columns = [_clean_column_name(c) for c in df.columns]
+        renamed_by_clean = {
+            r: c for r, c in zip(raw_columns, df.columns) if r != c
+        }
+        if renamed_by_clean:
+            logger.info(
+                "Cleaned %d column name(s) with embedded newlines/whitespace: %s",
+                len(renamed_by_clean), renamed_by_clean,
+            )
+
+        # ── Apply column mapping (default + user overrides) ───────────
+        # Build effective map: built-in defaults, overridden by any
+        # user-supplied entries.
+        effective_map: dict[str, str] = dict(_DEFAULT_COLUMN_MAP)
+        effective_map.update(self.column_map)
+
+        # Only rename columns that actually exist in the DataFrame.
+        renames = {k: v for k, v in effective_map.items() if k in df.columns}
+        unmapped_sheet_cols = [
+            c for c in df.columns
+            if c not in renames and c not in self._metric_names and c != "Code"
+        ]
+        if renames:
+            df = df.rename(columns=renames)
+            logger.info(
+                "Column mapping applied — %d sheet columns renamed to metric names: %s",
+                len(renames), renames,
+            )
+        else:
+            logger.warning(
+                "No sheet columns matched the column mapping. "
+                "Sheet columns: %s",
+                list(df.columns),
+            )
+
+        # Log which YAML metrics are present and which are still missing.
+        matched_metrics = sorted(
+            c for c in df.columns if c in self._metric_names
+        )
+        unmapped_metrics = sorted(
+            self._metric_names - set(df.columns)
+        )
+        logger.info(
+            "Metric columns matched: %d — %s", len(matched_metrics), matched_metrics,
+        )
+        if unmapped_metrics:
+            logger.info(
+                "YAML metrics with no matching sheet column (%d): %s",
+                len(unmapped_metrics), unmapped_metrics,
+            )
+        if unmapped_sheet_cols:
+            logger.debug(
+                "Sheet columns not mapped to any scoring metric (%d): %s",
+                len(unmapped_sheet_cols), unmapped_sheet_cols,
+            )
 
         # A Code column is required for keying.
         if "Code" not in df.columns:
