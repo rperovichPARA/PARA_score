@@ -49,14 +49,21 @@ def fetch_sector_signals(render_url: Optional[str] = None) -> dict[str, float]:
         (float).  Returns an empty dict on failure.
     """
     base_url = render_url or os.getenv("RENDER_API_URL", "")
+    logger.info(
+        "fetch_sector_signals called — RENDER_API_URL=%s",
+        base_url if base_url else "(not set)",
+    )
 
     if not base_url:
         logger.warning(
-            "No RENDER_API_URL configured. Sector signals unavailable."
+            "No RENDER_API_URL configured. Sector signals unavailable. "
+            "Set the RENDER_API_URL environment variable to the portfoliotools "
+            "Render service URL."
         )
         return {}
 
     url = f"{base_url.rstrip('/')}/sector-signals"
+    logger.info("Fetching sector signals from %s", url)
 
     max_retries = 4
     for attempt in range(1, max_retries + 1):
@@ -233,14 +240,28 @@ def compute_sector_metrics(
         Copy of *financials* with a ``sector_alpha`` column added.
     """
     df = financials.copy()
+    logger.info(
+        "compute_sector_metrics called — %d rows, columns: %s",
+        len(df),
+        [c for c in df.columns if "ector" in c.lower()],
+    )
 
     # Fetch signals if not provided.
     if sector_signals is None:
+        logger.info("No sector_signals passed — fetching from Render endpoint.")
         sector_signals = fetch_sector_signals(render_url=render_url)
+    else:
+        logger.info(
+            "sector_signals provided: %d sectors, keys=%s",
+            len(sector_signals),
+            list(sector_signals.keys())[:10],
+        )
 
     if not sector_signals:
         logger.warning(
-            "No sector signals available — sector_alpha will be NaN."
+            "No sector signals available — sector_alpha will be NaN for all %d stocks. "
+            "Check that RENDER_API_URL is set and /sector-signals is reachable.",
+            len(df),
         )
         df["sector_alpha"] = np.nan
         return df
@@ -248,7 +269,8 @@ def compute_sector_metrics(
     if "Sector17Code" not in df.columns:
         logger.warning(
             "Sector17Code column missing from financials — "
-            "sector_alpha will be NaN."
+            "sector_alpha will be NaN. Available columns: %s",
+            [c for c in df.columns if "ector" in c.lower() or "code" in c.lower()],
         )
         df["sector_alpha"] = np.nan
         return df

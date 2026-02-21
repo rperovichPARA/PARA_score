@@ -38,6 +38,14 @@ TEST_NAMES = [
     "Keyence Corp",
 ]
 TEST_SECTORS = ["3050", "3650", "3150", "3650", "3600"]
+TEST_SECTOR17_CODES = ["6", "9", "15", "10", "9"]
+TEST_SECTOR17_NAMES = [
+    "Automobiles & Transportation Equipment",
+    "Electric Appliances & Precision Instruments",
+    "Banks",
+    "IT & Services, Others",
+    "Electric Appliances & Precision Instruments",
+]
 
 
 def _make_financials() -> pd.DataFrame:
@@ -49,6 +57,8 @@ def _make_financials() -> pd.DataFrame:
         "CompanyName": TEST_NAMES,
         "CompanyNameEnglish": TEST_NAMES,
         "Sector33Code": TEST_SECTORS,
+        "Sector17Code": TEST_SECTOR17_CODES,
+        "Sector17CodeName": TEST_SECTOR17_NAMES,
         "MarketCode": ["0111"] * n,
         # Income statement
         "NetSales": [30_000_000, 12_000_000, 8_000_000, 6_500_000, 900_000],
@@ -162,14 +172,30 @@ class TestPipelineIntegration:
         # ADV should be positive for all stocks.
         assert (result["adv_liquidity"] > 0).all()
 
-    def test_sector_stub(self):
-        """Sector: all metrics should be NaN (stub)."""
-        result = compute_sector_metrics(self.financials)
+    def test_sector_with_signals(self):
+        """Sector: sector_alpha mapped from signals via Sector17Code."""
+        signals = {"6": 1.2, "9": -0.5, "10": 0.8, "15": 0.3}
+        result = compute_sector_metrics(self.financials, sector_signals=signals)
         assert len(result) == 5
-        for col in ["cyclical_momentum", "sector_trend_fund",
-                     "sector_trend_val", "competitive_strength"]:
-            assert col in result.columns
-            assert result[col].isna().all()
+        assert "sector_alpha" in result.columns
+        # All stocks should have a mapped sector_alpha (no NaN).
+        assert result["sector_alpha"].notna().all(), (
+            f"Unmapped sector_alpha values: "
+            f"{result[['Code', 'Sector17Code', 'sector_alpha']]}"
+        )
+        # Toyota (Sector17Code=6) -> 1.2
+        toyota = result.loc[result["Code"] == "7203", "sector_alpha"].iloc[0]
+        assert toyota == 1.2
+        # Sony and Keyence share Sector17Code=9 -> -0.5
+        sony = result.loc[result["Code"] == "6758", "sector_alpha"].iloc[0]
+        assert sony == -0.5
+
+    def test_sector_no_signals(self):
+        """Sector: sector_alpha is NaN when no signals available."""
+        result = compute_sector_metrics(self.financials, sector_signals={})
+        assert len(result) == 5
+        assert "sector_alpha" in result.columns
+        assert result["sector_alpha"].isna().all()
 
     def test_factors_metrics(self):
         """Factors: momentum, earnings momentum, and volatility from price/financial data."""
@@ -215,12 +241,13 @@ class TestPipelineIntegration:
 
     def test_composite_scoring(self):
         """Composite: VI and SP scores and ranks computed from all categories."""
+        sector_signals = {"6": 1.2, "9": -0.5, "10": 0.8, "15": 0.3}
         with self._mock_gsheet_empty():
             fund_df = compute_fundamentals_metrics(self.financials, self.prices)
             val_df = compute_valuation_metrics(
                 self.financials, self.prices, topix=self.topix,
             )
-            sector_df = compute_sector_metrics(self.financials)
+            sector_df = compute_sector_metrics(self.financials, sector_signals=sector_signals)
             factors_df = compute_factor_metrics(self.financials, self.prices, topix=self.topix)
             kozo_df = compute_kozo_metrics(fund_df)
 
@@ -253,12 +280,13 @@ class TestPipelineIntegration:
 
     def test_export_format(self):
         """Export: JSON payload matches the expected schema."""
+        sector_signals = {"6": 1.2, "9": -0.5, "10": 0.8, "15": 0.3}
         with self._mock_gsheet_empty():
             fund_df = compute_fundamentals_metrics(self.financials, self.prices)
             val_df = compute_valuation_metrics(
                 self.financials, self.prices, topix=self.topix,
             )
-            sector_df = compute_sector_metrics(self.financials)
+            sector_df = compute_sector_metrics(self.financials, sector_signals=sector_signals)
             factors_df = compute_factor_metrics(self.financials, self.prices, topix=self.topix)
             kozo_df = compute_kozo_metrics(fund_df)
 
@@ -311,12 +339,13 @@ class TestPipelineIntegration:
 
     def test_export_dry_run_writes_file(self):
         """Export dry-run: payload written to local JSON file."""
+        sector_signals = {"6": 1.2, "9": -0.5, "10": 0.8, "15": 0.3}
         with self._mock_gsheet_empty():
             fund_df = compute_fundamentals_metrics(self.financials, self.prices)
             val_df = compute_valuation_metrics(
                 self.financials, self.prices, topix=self.topix,
             )
-            sector_df = compute_sector_metrics(self.financials)
+            sector_df = compute_sector_metrics(self.financials, sector_signals=sector_signals)
             factors_df = compute_factor_metrics(self.financials, self.prices, topix=self.topix)
             kozo_df = compute_kozo_metrics(fund_df)
 

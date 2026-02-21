@@ -52,6 +52,7 @@ jobs:
         env:
           JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
           GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
+          RENDER_API_URL: ${{ secrets.RENDER_API_URL }}
           DATA_CACHE_DIR: ./cache
         run: |
           UNIVERSE="${{ github.event.inputs.universe || 'all' }}"
