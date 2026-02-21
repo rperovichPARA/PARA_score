@@ -82,6 +82,19 @@ _DEFAULT_COLUMN_MAP: dict[str, str] = {
 }
 
 
+def _normalise_code_to_4digit(code: str) -> str:
+    """Return the 4-digit base security code.
+
+    J-Quants V2 uses 5-digit codes (e.g. ``"72030"`` for Toyota 7203).
+    Google Sheets typically use the 4-digit form.  Strip the trailing
+    check digit so both formats can be compared consistently.
+    """
+    code = str(code).strip()
+    if len(code) == 5 and code.isdigit():
+        return code[:4]
+    return code
+
+
 def _clean_column_name(name: str) -> str:
     """Normalise a column header: strip newlines, collapse whitespace."""
     cleaned = re.sub(r"[\r\n]+", " ", str(name))
@@ -372,8 +385,11 @@ class GoogleSheetsClient:
             )
             return pd.DataFrame()
 
-        # Normalise the key.
+        # Normalise the key — strip whitespace and reduce 5-digit V2
+        # codes (e.g. "72030") to their 4-digit base form ("7203") so the
+        # index matches both J-Quants and manually-entered sheet codes.
         df["Code"] = df["Code"].astype(str).str.strip()
+        df["Code"] = df["Code"].apply(_normalise_code_to_4digit)
         df = df.drop_duplicates(subset="Code", keep="last")
         df = df.set_index("Code")
 
@@ -510,11 +526,16 @@ class GoogleSheetsClient:
 
         df = target.copy()
 
-        # Determine the join key from the target.
+        # Determine the join key from the target — normalise to 4-digit
+        # base codes so J-Quants 5-digit codes match the sheet index.
         if "Code" in df.columns:
-            join_key = df["Code"].astype(str).str.strip()
+            join_key = df["Code"].astype(str).str.strip().apply(
+                _normalise_code_to_4digit,
+            )
         elif df.index.name == "Code":
-            join_key = pd.Series(df.index.astype(str).str.strip(), index=df.index)
+            join_key = pd.Series(
+                df.index.astype(str).str.strip(), index=df.index,
+            ).apply(_normalise_code_to_4digit)
         else:
             logger.warning(
                 "Target DataFrame has no 'Code' column or index; "

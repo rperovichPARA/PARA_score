@@ -106,6 +106,20 @@ def load_scoring_params(
     return {k: float(config.get("scoring", {}).get(k, v)) for k, v in defaults.items()}
 
 
+def normalise_code(code: str) -> str:
+    """Return the 4-digit base security code.
+
+    J-Quants V2 returns 5-digit codes where the 5th character is a check
+    digit (e.g. ``"72030"`` for Toyota 7203).  Google Sheets typically use
+    the 4-digit form.  We strip the trailing check digit so both formats
+    can be compared consistently.
+    """
+    code = str(code).strip()
+    if len(code) == 5 and code.isdigit():
+        return code[:4]
+    return code
+
+
 def winsorized_zscore(
     series: pd.Series,
     lower_pct: float = 0.01,
