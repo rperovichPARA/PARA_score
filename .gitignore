@@ -1,6 +1,9 @@
 # Output
 output/
 
+# Data cache
+cache/
+
 # Environment
 .env
 
