@@ -1,8 +1,8 @@
 """Google Sheets adapter for supplementary metric data.
 
-Reads published Google Sheets via their CSV export URL and returns
-DataFrames keyed on stock code, with column names matching
-``scoring_weights.yaml``.
+Reads Google Sheets via the Google Sheets API using service account
+credentials and returns DataFrames keyed on stock code, with column
+names matching ``scoring_weights.yaml``.
 
 The primary use-case is the **PARA.FS.data** spreadsheet which holds
 metrics that cannot be fully derived from J-Quants Standard-plan data
@@ -10,24 +10,23 @@ metrics that cannot be fully derived from J-Quants Standard-plan data
 etc.).  The adapter can also read arbitrary additional sheets — each
 tab is fetched independently and the results can be merged.
 
-Authentication is not required: the target sheets must be shared with
-*"anyone with the link"* viewer access so the CSV export endpoint is
-reachable.  For private sheets, set ``GSHEET_SERVICE_ACCOUNT_JSON``
-to a service-account key path and the adapter will fall back to the
-Google Sheets API (requires ``google-api-python-client``).
+Authentication uses the ``GOOGLE_SHEETS_CREDENTIALS`` environment
+variable, which should contain the full service account JSON string.
+Falls back to the unauthenticated public CSV export URL only if no
+credentials are available (which will fail for private sheets).
 
 Environment variables
 ---------------------
 GSHEET_SPREADSHEET_ID
     Default spreadsheet ID.  Falls back to the PARA.FS.data sheet.
-GSHEET_SERVICE_ACCOUNT_JSON
-    Optional path to a Google service-account JSON key file for
-    private sheets.  When set, the adapter prefers the Sheets API
-    over the public CSV export.
+GOOGLE_SHEETS_CREDENTIALS
+    Full service account JSON string for authenticating with the
+    Google Sheets API.  This is the primary auth method.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -37,6 +36,11 @@ import pandas as pd
 import yaml
 
 logger = logging.getLogger(__name__)
+
+_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+]
 
 # ── Defaults ──────────────────────────────────────────────────────────────
 _DEFAULT_SPREADSHEET_ID = "10mjEbmtJC6y5tCqnQ_SrUQAfheDhafAtpX0DjJJO5fk"
@@ -51,6 +55,30 @@ def _build_csv_url(spreadsheet_id: str, gid: int = 0) -> str:
         f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
         f"/export?format=csv&gid={gid}"
     )
+
+
+def _build_gspread_client() -> Optional[Any]:
+    """Build an authenticated gspread client from GOOGLE_SHEETS_CREDENTIALS.
+
+    The env var should contain the full service account JSON string.
+    Returns ``None`` if credentials are not available.
+    """
+    creds_json = os.getenv("GOOGLE_SHEETS_CREDENTIALS", "").strip()
+    if not creds_json:
+        return None
+
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+
+        info = json.loads(creds_json)
+        creds = Credentials.from_service_account_info(info, scopes=_SCOPES)
+        client = gspread.authorize(creds)
+        logger.info("Authenticated with Google Sheets API via service account.")
+        return client
+    except Exception as exc:
+        logger.warning("Failed to build gspread client: %s", exc)
+        return None
 
 
 def _load_all_metric_names(config_path: Path | str = _CONFIG_PATH) -> set[str]:
@@ -112,19 +140,71 @@ class GoogleSheetsClient:
         )
         self.column_map: dict[str, str] = column_map or {}
         self._metric_names: set[str] = _load_all_metric_names(config_path)
+        self._gspread_client = _build_gspread_client()
+        if self._gspread_client is None:
+            logger.warning(
+                "No GOOGLE_SHEETS_CREDENTIALS found; falling back to "
+                "unauthenticated CSV export (will fail for private sheets)."
+            )
         logger.info(
-            "GoogleSheetsClient initialised (spreadsheet=%s, known metrics=%d)",
+            "GoogleSheetsClient initialised (spreadsheet=%s, known metrics=%d, "
+            "authenticated=%s)",
             self.spreadsheet_id,
             len(self._metric_names),
+            self._gspread_client is not None,
         )
 
     # ── Core I/O ──────────────────────────────────────────────────────
 
-    def _fetch_csv(self, spreadsheet_id: str, gid: int) -> pd.DataFrame:
-        """Fetch a sheet tab via the public CSV export URL.
+    def _fetch_via_api(self, spreadsheet_id: str, gid: int) -> pd.DataFrame:
+        """Fetch a sheet tab via the authenticated Google Sheets API.
 
-        Returns an empty DataFrame on any network or parse error.
+        Uses the gspread client to open the spreadsheet by key and read
+        the worksheet matching the given GID.  Returns an empty DataFrame
+        on any error.
         """
+        try:
+            spreadsheet = self._gspread_client.open_by_key(spreadsheet_id)
+            worksheet = None
+            for ws in spreadsheet.worksheets():
+                if ws.id == gid:
+                    worksheet = ws
+                    break
+            if worksheet is None:
+                logger.warning(
+                    "No worksheet with gid=%d in spreadsheet %s. "
+                    "Available: %s",
+                    gid, spreadsheet_id,
+                    [(ws.title, ws.id) for ws in spreadsheet.worksheets()],
+                )
+                return pd.DataFrame()
+
+            data = worksheet.get_all_values()
+            if not data:
+                return pd.DataFrame()
+
+            df = pd.DataFrame(data[1:], columns=data[0])
+            logger.info(
+                "Fetched sheet via API (id=%s, gid=%d): %d rows.",
+                spreadsheet_id, gid, len(df),
+            )
+            return df
+        except Exception as exc:
+            logger.warning(
+                "API fetch failed (id=%s, gid=%d): %s",
+                spreadsheet_id, gid, exc,
+            )
+            return pd.DataFrame()
+
+    def _fetch_csv(self, spreadsheet_id: str, gid: int) -> pd.DataFrame:
+        """Fetch a sheet tab, preferring the authenticated API.
+
+        Falls back to the public CSV export URL if no gspread client
+        is available.  Returns an empty DataFrame on any error.
+        """
+        if self._gspread_client is not None:
+            return self._fetch_via_api(spreadsheet_id, gid)
+
         url = _build_csv_url(spreadsheet_id, gid)
         try:
             df = pd.read_csv(url)
