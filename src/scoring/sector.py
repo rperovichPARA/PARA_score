@@ -234,25 +234,26 @@ def _parse_sector_signals(data: Any) -> dict[str, float]:
 
 # Maps the string sector codes used by the /sector-signals endpoint
 # (e.g. 'TP17AUTO') to the numeric Sector17Code values from J-Quants
-# listed company data.
+# listed company data.  J-Quants uses simple integers 1–17 for the
+# TOPIX-17 sector classification.
 TOPIX17_STRING_TO_NUMERIC: dict[str, str] = {
-    "TP17FOOD": "3050",   # Foods
-    "TP17ERGY": "1050",   # Energy Resources
-    "TP17CNST": "2050",   # Construction & Materials
-    "TP17STML": "3200",   # Raw Materials & Chemicals
-    "TP17PHRM": "3250",   # Pharmaceutical
-    "TP17AUTO": "3700",   # Automobile & Transport Equipment
-    "TP17STEL": "3500",   # Steel & Nonferrous Metals
-    "TP17MACH": "3600",   # Machinery
-    "TP17ELEC": "3650",   # Electric Appliances & Precision Instruments
-    "TP17ITTL": "5250",   # IT & Services, Others
-    "TP17ELPR": "7050",   # Electric Power & Gas
-    "TP17TLOG": "5050",   # Transportation & Logistics
-    "TP17TRDG": "6050",   # Trading Companies & Wholesale
-    "TP17RETL": "6100",   # Retail Trade
-    "TP17BNK":  "7100",   # Banks
-    "TP17FNCL": "7150",   # Financials ex Banks
-    "TP17REST": "8050",   # Real Estate
+    "TP17FOOD": "1",    # Foods
+    "TP17ERGY": "2",    # Energy Resources
+    "TP17CNST": "3",    # Construction & Materials
+    "TP17STML": "4",    # Raw Materials & Chemicals
+    "TP17PHRM": "5",    # Pharmaceutical
+    "TP17AUTO": "6",    # Automobile & Transportation Equipment
+    "TP17STEL": "7",    # Steel & Nonferrous Metals
+    "TP17MACH": "8",    # Machinery
+    "TP17ELEC": "9",    # Electric Appliances & Precision Instruments
+    "TP17ITTL": "10",   # IT & Services, Others
+    "TP17ELPR": "11",   # Electric Power & Gas
+    "TP17TLOG": "12",   # Transportation & Logistics
+    "TP17TRDG": "13",   # Trading Companies & Wholesale
+    "TP17RETL": "14",   # Retail Trade
+    "TP17BNK":  "15",   # Banks
+    "TP17FNCL": "16",   # Financials (ex Banks)
+    "TP17REST": "17",   # Real Estate
 }
 
 # Reverse mapping: numeric Sector17Code -> string code.
@@ -268,7 +269,7 @@ def _remap_signals_to_numeric(
 
     If signal keys are already numeric, returns them unchanged.
     If they use string codes (e.g. ``'TP17AUTO'``), maps each to
-    its numeric equivalent (e.g. ``'3700'``).  Unmapped keys are
+    its numeric equivalent (e.g. ``'6'``).  Unmapped keys are
     preserved as-is with a warning.
 
     Args:
@@ -375,8 +376,27 @@ def compute_sector_metrics(
         df["sector_alpha"] = np.nan
         return df
 
+    # Log unique Sector17Code values from the actual data for debugging.
+    raw_codes = df["Sector17Code"].astype(str).str.strip()
+    unique_codes = sorted(raw_codes.dropna().unique(), key=lambda x: (len(x), x))
+    logger.info(
+        "Unique Sector17Code values in universe (%d distinct): %s",
+        len(unique_codes), unique_codes,
+    )
+    if "Sector17CodeName" in df.columns:
+        code_name_pairs = (
+            df[["Sector17Code", "Sector17CodeName"]]
+            .drop_duplicates()
+            .sort_values("Sector17Code")
+            .values.tolist()
+        )
+        logger.info(
+            "Sector17Code → Sector17CodeName mapping from data:\n%s",
+            "\n".join(f"  {code!s:>4s} → {name}" for code, name in code_name_pairs),
+        )
+
     # Remap string sector codes (e.g. 'TP17AUTO') to numeric codes
-    # (e.g. '3700') so they match the Sector17Code values on stocks.
+    # (e.g. '6') so they match the Sector17Code values on stocks.
     sector_signals = _remap_signals_to_numeric(sector_signals)
 
     # Normalise Sector17Code to string for matching.
