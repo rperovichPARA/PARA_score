@@ -3,10 +3,15 @@
 Coordinates: config loading -> J-Quants data pull -> metric computation ->
 category scoring -> composite scoring -> ranked output.
 
+Data fetching is cached to disk (parquet/JSON) to avoid redundant API calls.
+The scoring step always runs from the cached data.
+
 CLI usage::
 
-    python -m src.pipeline --universe 7203,8697 --output-dir ./output
     python -m src.pipeline --universe all --output-dir ./output
+    python -m src.pipeline --universe 7203,8697 --output-dir ./output
+    python -m src.pipeline --force-refresh          # bypass all caches
+    python -m src.pipeline --update-only             # only score new listings
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ import pandas as pd
 import yaml
 from dotenv import load_dotenv
 
+from src.data.cache import DataCache
 from src.data.jquants import JQuantsClient
 from src.scoring.composite import CATEGORY_NAMES, compute_composite_scores
 from src.scoring.factors import compute_factor_metrics
@@ -211,6 +217,159 @@ def _write_excel(
 
 
 # ---------------------------------------------------------------------------
+# Cached data fetching
+# ---------------------------------------------------------------------------
+
+def _fetch_listed_companies(
+    client: JQuantsClient,
+    cache: DataCache,
+) -> pd.DataFrame:
+    """Fetch listed companies, using cache when fresh.
+
+    Cache TTL: 7 days (listed companies change infrequently).
+    """
+    cached = cache.load_parquet("listed_companies")
+    if cached is not None:
+        return cached
+
+    logger.info("Fetching listed companies from J-Quants API...")
+    listed = client.get_listed_companies()
+    cache.save_parquet("listed_companies", listed)
+    return listed
+
+
+def _fetch_financials(
+    client: JQuantsClient,
+    cache: DataCache,
+    universe_code_list: list[str],
+) -> pd.DataFrame:
+    """Fetch financial statements, using cache when fresh.
+
+    Cache TTL: 7 days (statements are quarterly).
+    """
+    cached = cache.load_parquet("financials")
+    if cached is not None:
+        return cached
+
+    logger.info("Fetching financial statements for %d codes...", len(universe_code_list))
+    financials = client.get_financial_statements_bulk(universe_code_list)
+    if not financials.empty:
+        cache.save_parquet("financials", financials)
+    return financials
+
+
+def _fetch_daily_quotes(
+    client: JQuantsClient,
+    cache: DataCache,
+    universe_code_list: list[str],
+    date_from: str,
+    date_to: str,
+) -> pd.DataFrame:
+    """Fetch daily quotes with incremental caching.
+
+    On re-fetch (cache older than 1 day), only pull quotes since the last
+    cached date and append them to the existing cache.
+    """
+    if not cache.is_stale("daily_quotes"):
+        cached = cache.load_parquet("daily_quotes")
+        if cached is not None:
+            return cached
+
+    # Check if we can do an incremental fetch.
+    last_cached_date = cache.get_last_date("daily_quotes", date_col="Date")
+
+    if last_cached_date and not cache.force_refresh:
+        # Incremental: fetch only from the day after the last cached date.
+        incremental_from = (
+            datetime.strptime(last_cached_date, "%Y-%m-%d") + timedelta(days=1)
+        ).strftime("%Y-%m-%d")
+
+        if incremental_from > date_to:
+            # Cache already covers the requested range.
+            logger.info("Daily quotes cache already covers through %s.", last_cached_date)
+            cached = cache.load_parquet("daily_quotes", max_age_days=365)
+            if cached is not None:
+                return cached
+
+        logger.info(
+            "Incremental daily quotes fetch: %s to %s for %d codes...",
+            incremental_from, date_to, len(universe_code_list),
+        )
+        new_quotes = client.get_daily_quotes_bulk(
+            codes=universe_code_list,
+            date_from=incremental_from,
+            date_to=date_to,
+        )
+        if not new_quotes.empty:
+            combined = cache.append_parquet("daily_quotes", new_quotes, date_col="Date")
+            # Filter to the requested window.
+            if "Date" in combined.columns:
+                combined["Date"] = pd.to_datetime(combined["Date"])
+                combined = combined[
+                    (combined["Date"] >= pd.Timestamp(date_from))
+                    & (combined["Date"] <= pd.Timestamp(date_to))
+                ]
+            return combined
+        else:
+            # No new data; return existing cache.
+            cached = cache.load_parquet("daily_quotes", max_age_days=365)
+            if cached is not None:
+                return cached
+    else:
+        # Full fetch.
+        logger.info(
+            "Full daily quotes fetch: %s to %s for %d codes...",
+            date_from, date_to, len(universe_code_list),
+        )
+
+    prices = client.get_daily_quotes_bulk(
+        codes=universe_code_list,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    if not prices.empty:
+        cache.save_parquet("daily_quotes", prices)
+    return prices
+
+
+def _fetch_topix(
+    client: JQuantsClient,
+    cache: DataCache,
+    date_from: str,
+    date_to: str,
+) -> pd.DataFrame:
+    """Fetch TOPIX index, stored inside the daily_quotes cache cycle.
+
+    TOPIX is small and fast to fetch, so it follows the daily_quotes TTL.
+    """
+    cached = cache.load_parquet("topix", max_age_days=1)
+    if cached is not None:
+        return cached
+
+    logger.info("Fetching TOPIX index (%s to %s)...", date_from, date_to)
+    topix = client.get_topix_index(date_from=date_from, date_to=date_to)
+    if not topix.empty:
+        cache.save_parquet("topix", topix)
+    return topix
+
+
+def _fetch_sector_signals(cache: DataCache) -> dict[str, float]:
+    """Fetch sector signals from Render, using cache when fresh.
+
+    Cache TTL: 7 days.
+    """
+    cached = cache.load_json("sector_signals")
+    if cached is not None:
+        return cached
+
+    logger.info("Fetching sector signals from Render...")
+    signals = fetch_sector_signals()
+    if signals:
+        cache.save_json("sector_signals", signals)
+    return signals
+
+
+# ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
@@ -218,12 +377,15 @@ def run_pipeline(
     universe_codes: Optional[list[str]] = None,
     config_path: str = DEFAULT_CONFIG_PATH,
     output_dir: str = "",
+    force_refresh: bool = False,
+    update_only: bool = False,
+    cache_dir: Optional[str] = None,
 ) -> pd.DataFrame:
     """Run the full PARA scoring pipeline.
 
     1. Load configuration and initialise J-Quants client.
     2. Pull listed companies and filter to the scoring universe.
-    3. Fetch financial statements and daily prices.
+    3. Fetch financial statements and daily prices (cached).
     4. Compute metrics for all five scoring categories.
     5. Pass category DataFrames to composite scorer for VI / SP.
     6. Write ranked results to ``output_dir/scores.csv`` and
@@ -236,6 +398,11 @@ def run_pipeline(
         config_path: Path to ``scoring_weights.yaml``.
         output_dir: Directory for output files.  Falls back to
             ``OUTPUT_DIR`` env var, then ``./output``.
+        force_refresh: If ``True``, bypass all data caches and re-fetch
+            everything from the API.
+        update_only: If ``True``, skip stocks that already have scores
+            in the existing output file — only score new additions.
+        cache_dir: Override cache directory path.
 
     Returns:
         DataFrame with composite scores and rankings.
@@ -243,13 +410,15 @@ def run_pipeline(
     output_dir = output_dir or os.getenv("OUTPUT_DIR", "./output")
     config = load_pipeline_config(config_path)
 
+    # ── 0. Initialise cache ───────────────────────────────────────────
+    cache = DataCache(cache_dir=cache_dir, force_refresh=force_refresh)
+
     # ── 1. Initialise J-Quants client ─────────────────────────────────
     logger.info("Initialising J-Quants client...")
     client = JQuantsClient()
 
     # ── 2. Build scoring universe ─────────────────────────────────────
-    logger.info("Fetching listed companies...")
-    listed = client.get_listed_companies()
+    listed = _fetch_listed_companies(client, cache)
     logger.info("Full listed universe: %d companies", len(listed))
 
     universe = _filter_universe(listed, config, codes=universe_codes)
@@ -260,9 +429,48 @@ def run_pipeline(
     logger.info("Scoring universe: %d companies", len(universe))
     universe_code_list = universe["Code"].astype(str).str.strip().tolist()
 
-    # ── 3. Fetch financial statements and prices ──────────────────────
-    logger.info("Fetching financial statements for %d codes...", len(universe_code_list))
-    financials = client.get_financial_statements_bulk(universe_code_list)
+    # ── 2b. Handle --update-only ──────────────────────────────────────
+    existing_codes: set[str] = set()
+    if update_only:
+        csv_path = os.path.join(output_dir, "scores.csv")
+        if os.path.exists(csv_path):
+            existing_df = pd.read_csv(csv_path)
+            if "Code" in existing_df.columns:
+                existing_codes = set(
+                    existing_df["Code"].astype(str).str.strip().map(_normalise_code)
+                )
+                # Filter universe to only new codes.
+                new_mask = (
+                    universe["Code"]
+                    .astype(str)
+                    .str.strip()
+                    .map(_normalise_code)
+                    .apply(lambda c: c not in existing_codes)
+                )
+                new_universe = universe[new_mask]
+
+                if new_universe.empty:
+                    logger.info(
+                        "update-only: all %d companies already scored. Nothing to do.",
+                        len(universe),
+                    )
+                    return existing_df
+
+                logger.info(
+                    "update-only: %d new companies to score (skipping %d already scored).",
+                    len(new_universe),
+                    len(universe) - len(new_universe),
+                )
+                universe = new_universe
+                universe_code_list = universe["Code"].astype(str).str.strip().tolist()
+        else:
+            logger.info(
+                "update-only: no existing scores at %s — scoring full universe.",
+                csv_path,
+            )
+
+    # ── 3. Fetch financial statements and prices (cached) ─────────────
+    financials = _fetch_financials(client, cache, universe_code_list)
     logger.info("Raw financial statements: %d rows", len(financials))
 
     # Deduplicate (keep most recent disclosure per code)
@@ -279,21 +487,17 @@ def run_pipeline(
             financials[sector_col] = fin_codes.map(code_index[sector_col]).values
 
     # Fetch recent daily quotes for valuation / liquidity metrics.
-    # V2 API requires 'code' or 'date' — iterate per code like financials.
     today = datetime.utcnow().strftime("%Y-%m-%d")
     six_months_ago = (datetime.utcnow() - timedelta(days=180)).strftime("%Y-%m-%d")
-    logger.info("Fetching daily quotes (%s to %s) for %d codes...",
-                six_months_ago, today, len(universe_code_list))
-    prices = client.get_daily_quotes_bulk(
-        codes=universe_code_list,
-        date_from=six_months_ago,
-        date_to=today,
+
+    prices = _fetch_daily_quotes(
+        client, cache, universe_code_list,
+        date_from=six_months_ago, date_to=today,
     )
     logger.info("Daily quotes for universe: %d rows", len(prices))
 
     # Fetch TOPIX index for the same window (needed for price_6mo_vs_tpx).
-    logger.info("Fetching TOPIX index (%s to %s)...", six_months_ago, today)
-    topix = client.get_topix_index(date_from=six_months_ago, date_to=today)
+    topix = _fetch_topix(client, cache, date_from=six_months_ago, date_to=today)
     logger.info("TOPIX index: %d rows", len(topix))
 
     # ── 4. Compute metrics ────────────────────────────────────────────
@@ -301,10 +505,7 @@ def run_pipeline(
     fundamentals_df = compute_fundamentals_metrics(financials, prices)
     valuation_df = compute_valuation_metrics(financials, prices, topix=topix)
 
-    # Fetch sector rotation signals from the portfoliotools Render
-    # service and pass them to the sector scoring module.
-    logger.info("Fetching sector signals from Render...")
-    sector_signals = fetch_sector_signals()
+    sector_signals = _fetch_sector_signals(cache)
     sector_df = compute_sector_metrics(financials, sector_signals=sector_signals)
 
     factors_df = compute_factor_metrics(financials, prices, topix=topix)
@@ -338,6 +539,26 @@ def run_pipeline(
                if c in results.columns]
     score_cols = [c for c in results.columns if c not in id_cols]
     results = results[id_cols + score_cols]
+
+    # ── 5b. Merge with existing scores if --update-only ───────────────
+    if update_only and existing_codes:
+        csv_path = os.path.join(output_dir, "scores.csv")
+        if os.path.exists(csv_path):
+            existing_df = pd.read_csv(csv_path)
+            results = pd.concat([existing_df, results], ignore_index=True)
+            # Re-rank across the merged set.
+            if "VI_score" in results.columns:
+                results["VI_rank"] = results["VI_score"].rank(
+                    ascending=False, method="min"
+                ).astype(int)
+            if "SP_score" in results.columns:
+                results["SP_rank"] = results["SP_score"].rank(
+                    ascending=False, method="min"
+                ).astype(int)
+            logger.info(
+                "update-only: merged new scores with %d existing -> %d total.",
+                len(existing_df), len(results),
+            )
 
     # ── 6. Write output ───────────────────────────────────────────────
     os.makedirs(output_dir, exist_ok=True)
@@ -402,6 +623,34 @@ def main() -> None:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging verbosity (default: INFO).",
     )
+    parser.add_argument(
+        "--force-refresh",
+        action="store_true",
+        default=False,
+        help=(
+            "Bypass all data caches and re-fetch everything from the API. "
+            "The scoring step still runs normally."
+        ),
+    )
+    parser.add_argument(
+        "--update-only",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip stocks that already have scores in the output file. "
+            "Only score new additions to the universe. Useful when a few "
+            "new listings appear between full scoring runs."
+        ),
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default="",
+        help=(
+            "Directory for cached data files. Defaults to DATA_CACHE_DIR "
+            "environment variable, then ./cache."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -420,6 +669,9 @@ def main() -> None:
         universe_codes=codes,
         config_path=args.config,
         output_dir=args.output_dir,
+        force_refresh=args.force_refresh,
+        update_only=args.update_only,
+        cache_dir=args.cache_dir or None,
     )
 
     if results.empty:

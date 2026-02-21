@@ -15,6 +15,11 @@ on:
         required: false
         type: boolean
         default: false
+      force_refresh:
+        description: "Bypass all data caches and re-fetch from APIs"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   score:
@@ -35,16 +40,34 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Restore data cache
+        uses: actions/cache@v4
+        with:
+          path: ./cache
+          key: para-data-cache-week-${{ github.run_id }}
+          restore-keys: |
+            para-data-cache-week-
+
       - name: Run scoring pipeline
         env:
           JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
           GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
+          DATA_CACHE_DIR: ./cache
         run: |
           UNIVERSE="${{ github.event.inputs.universe || 'all' }}"
+          FORCE_REFRESH="${{ github.event.inputs.force_refresh || 'false' }}"
+
+          EXTRA_FLAGS=""
+          if [ "$FORCE_REFRESH" = "true" ]; then
+            EXTRA_FLAGS="--force-refresh"
+          fi
+
           python -m src.pipeline \
             --universe "$UNIVERSE" \
             --output-dir ./output \
-            --log-level INFO
+            --cache-dir ./cache \
+            --log-level INFO \
+            $EXTRA_FLAGS
 
       - name: Export and upload scores
         env:
