@@ -165,8 +165,20 @@ class GoogleSheetsClient:
         """
         try:
             spreadsheet = self._gspread_client.open_by_key(spreadsheet_id)
+
+            # Log all available worksheets so we can verify the target gid
+            all_worksheets = spreadsheet.worksheets()
+            logger.info(
+                "Spreadsheet %s has %d worksheet(s):",
+                spreadsheet_id, len(all_worksheets),
+            )
+            for ws in all_worksheets:
+                logger.info(
+                    "  worksheet title=%r, gid=%d", ws.title, ws.id,
+                )
+
             worksheet = None
-            for ws in spreadsheet.worksheets():
+            for ws in all_worksheets:
                 if ws.id == gid:
                     worksheet = ws
                     break
@@ -175,7 +187,7 @@ class GoogleSheetsClient:
                     "No worksheet with gid=%d in spreadsheet %s. "
                     "Available: %s",
                     gid, spreadsheet_id,
-                    [(ws.title, ws.id) for ws in spreadsheet.worksheets()],
+                    [(ws.title, ws.id) for ws in all_worksheets],
                 )
                 return pd.DataFrame()
 
@@ -189,10 +201,10 @@ class GoogleSheetsClient:
                 spreadsheet_id, gid, len(df),
             )
             return df
-        except Exception as exc:
-            logger.warning(
-                "API fetch failed (id=%s, gid=%d): %s",
-                spreadsheet_id, gid, exc,
+        except Exception:
+            logger.exception(
+                "API fetch failed (id=%s, gid=%d)",
+                spreadsheet_id, gid,
             )
             return pd.DataFrame()
 
